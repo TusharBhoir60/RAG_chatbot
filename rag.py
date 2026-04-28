@@ -34,11 +34,9 @@ def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> List[st
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-        start = end - overlap
-        if start < 0:
-            start = 0
-        if start >= n:
+        if end >= n:
             break
+        start = max(end - overlap, start + 1)
     return chunks
 
 
@@ -150,18 +148,18 @@ def generate_with_ollama(prompt: str, model: str):
     return resp["message"]["content"]
 
 
-def ask(query: str, provider: str, llm_model: str, top_k: int = 6):
+def ask(query: str, provider: str, llm_model: str, top_k: int = 6, show_context: bool = False):
     client = QdrantClient(url="http://localhost:6333")
     embedder = SentenceTransformer(EMBED_MODEL_NAME)
 
     qvec = embed_texts(embedder, [query])[0].tolist()
 
-    hits = client.search(
+    hits = client.query_points(
         collection_name=COLLECTION,
-        query_vector=qvec,
+        query=qvec,
         limit=top_k,
         with_payload=True,
-    )
+    ).points
 
     contexts = []
     for h in hits:
@@ -187,9 +185,11 @@ def ask(query: str, provider: str, llm_model: str, top_k: int = 6):
     print("\n=== ANSWER ===\n")
     print(answer)
 
-    print("\n=== TOP CONTEXTS ===\n")
-    for c in contexts:
-        print(f"- [{c['filename']}:{c['page']}] score={c['score']:.4f}")
+    if show_context:
+        print("\n=== CONTEXT TEXT (DEBUG) ===\n")
+        for c in contexts:
+            print(f"\n----- [{c['filename']}:{c['page']}] score={c['score']:.4f} -----\n")
+            print(c["text"][:1200])
 
 
 def main():
@@ -204,13 +204,14 @@ def main():
     p_ask.add_argument("--provider", choices=["openai", "ollama"], default="ollama")
     p_ask.add_argument("--model", default="llama3")  # ollama default
     p_ask.add_argument("--top_k", type=int, default=6)
+    p_ask.add_argument("--show_context", action="store_true")
 
     args = parser.parse_args()
 
     if args.cmd == "ingest":
         ingest(args.pdf_dir)
     elif args.cmd == "ask":
-        ask(args.query, args.provider, args.model, args.top_k)
+        ask(args.query, args.provider, args.model, args.top_k, args.show_context)
 
 
 if __name__ == "__main__":
