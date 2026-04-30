@@ -1,25 +1,18 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 import shutil
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
 from app.rag.pipeline import answer_question
+from app.db.history import create_conversation, add_message, get_messages, ensure_db
 
-app = FastAPI(title="RAG Bot API", version="0.2.0")
+app = FastAPI(title="RAG Bot API", version="0.3.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
@@ -28,6 +21,13 @@ class ChatRequest(BaseModel):
     top_k: int = Field(default=6, ge=1, le=20)
     only_filename: Optional[str] = None
     debug: bool = False
+    conversation_id: Optional[Union[str, int]] = None
+
+    @model_validator(mode="after")
+    def convert_id(self) -> 'ChatRequest':
+        if self.conversation_id is not None:
+            self.conversation_id = str(self.conversation_id)
+        return self
 
 
 class Citation(BaseModel):
@@ -44,9 +44,15 @@ class ContextChunk(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    conversation_id: str
     answer: str
     citations: List[Citation]
     contexts: Optional[List[ContextChunk]] = None
+
+
+@app.on_event("startup")
+def startup():
+    ensure_db()
 
 
 @app.get("/health")
@@ -56,6 +62,13 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
+    # Create or use existing conversation
+    conversation_id = req.conversation_id or create_conversation("New Chat")
+
+    # Save user message
+    add_message(conversation_id, "user", req.query)
+
+    # Run RAG
     answer, citations, contexts = answer_question(
         query=req.query,
         provider=req.provider,
@@ -64,13 +77,25 @@ def chat(req: ChatRequest):
         only_filename=req.only_filename,
     )
 
+    # Save assistant response
+    add_message(conversation_id, "assistant", answer)
+
     resp: Dict[str, Any] = {
+        "conversation_id": conversation_id,
         "answer": answer,
         "citations": citations,
     }
     if req.debug:
         resp["contexts"] = contexts
     return resp
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def list_messages(conversation_id: int):
+    return {
+        "conversation_id": conversation_id,
+        "messages": get_messages(conversation_id),
+    }
 
 
 @app.post("/documents/upload")
