@@ -35,13 +35,13 @@ def retrieve(
             must=[FieldCondition(key="filename", match=MatchValue(value=only_filename))]
         )
 
-    hits = client.search(
+    hits = client.query_points(
         collection_name=COLLECTION,
-        query_vector=qvec,
+        query=qvec,
         limit=top_k,
         with_payload=True,
         query_filter=qdrant_filter,
-    )
+    ).points
 
     contexts: List[Dict[str, Any]] = []
     for h in hits:
@@ -73,8 +73,9 @@ def build_prompt(query: str, contexts: List[Dict[str, Any]]) -> str:
 RULES:
 - Use ONLY the provided context to answer.
 - If the answer is not in the context, say: "I don't know based on the provided documents."
-- Always include citations in the form [filename.pdf:page] for every important claim.
+- Do NOT include citation brackets inside the answer text.
 - Keep the answer concise and well-structured.
+- The application will attach citations separately.
 
 QUESTION:
 {query}
