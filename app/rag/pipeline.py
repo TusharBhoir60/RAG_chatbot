@@ -11,7 +11,7 @@ COLLECTION = "pdf_chunks"
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def _embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
+def embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
     vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
     return np.asarray(vecs, dtype=np.float32)
 
@@ -25,7 +25,7 @@ def retrieve(
     client = QdrantClient(url=qdrant_url)
     embedder = SentenceTransformer(EMBED_MODEL_NAME)
 
-    qvec = _embed_texts(embedder, [query])[0].tolist()
+    qvec = embed_texts(embedder, [query])[0].tolist()
 
     qdrant_filter = None
     if only_filename:
@@ -59,7 +59,22 @@ def retrieve(
     return contexts
 
 
-def build_prompt(query: str, contexts: List[Dict[str, Any]]) -> str:
+def format_history(history: List[Dict[str, Any]]) -> str:
+    if not history:
+        return "None"
+    lines = []
+    for m in history:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        lines.append(f"{role.upper()}: {content}")
+    return "\n".join(lines)
+
+
+def build_prompt(
+    query: str,
+    contexts: List[Dict[str, Any]],
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     context_blocks = []
     for c in contexts:
         page = c.get("page", "?")
@@ -67,6 +82,7 @@ def build_prompt(query: str, contexts: List[Dict[str, Any]]) -> str:
         context_blocks.append(f"{tag}\n{c.get('text','')}")
 
     context_text = "\n\n---\n\n".join(context_blocks)
+    history_text = format_history(history or [])
 
     return f"""You are a helpful RAG assistant.
 
@@ -76,6 +92,9 @@ RULES:
 - Do NOT include citation brackets inside the answer text.
 - Keep the answer concise and well-structured.
 - The application will attach citations separately.
+
+CONVERSATION HISTORY (most recent last):
+{history_text}
 
 QUESTION:
 {query}
@@ -101,7 +120,6 @@ def generate(provider: str, model: str, prompt: str) -> str:
         return resp["message"]["content"]
 
     if provider == "openai":
-        # Requires OPENAI_API_KEY env var
         from openai import OpenAI
 
         client = OpenAI()
@@ -116,7 +134,6 @@ def generate(provider: str, model: str, prompt: str) -> str:
 
 
 def extract_citations(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Simple: citations are the unique (filename,page) pairs we used as context.
     seen = set()
     out = []
     for c in contexts:
@@ -134,6 +151,7 @@ def answer_question(
     model: str = "llama3",
     top_k: int = 6,
     only_filename: Optional[str] = None,
+    history: Optional[List[Dict[str, Any]]] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
     contexts = retrieve(
@@ -142,7 +160,7 @@ def answer_question(
         only_filename=only_filename,
         qdrant_url=qdrant_url,
     )
-    prompt = build_prompt(query, contexts)
+    prompt = build_prompt(query, contexts, history=history)
     answer = generate(provider=provider, model=model, prompt=prompt)
     citations = extract_citations(contexts)
     return answer, citations, contexts

@@ -5,13 +5,22 @@ from pathlib import Path
 import shutil
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
 from app.rag.pipeline import answer_question
 from app.db.history import create_conversation, add_message, get_messages, ensure_db
 
-app = FastAPI(title="RAG Bot API", version="0.3.0")
+app = FastAPI(title="RAG Bot API", version="0.4.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ChatRequest(BaseModel):
@@ -65,16 +74,22 @@ def chat(req: ChatRequest):
     # Create or use existing conversation
     conversation_id = req.conversation_id or create_conversation("New Chat")
 
+    # Get prior history BEFORE saving current message
+    history = get_messages(conversation_id)
+    # Limit to last 6 messages
+    history = history[-6:] if len(history) > 6 else history
+
     # Save user message
     add_message(conversation_id, "user", req.query)
 
-    # Run RAG
+    # Run RAG with history
     answer, citations, contexts = answer_question(
         query=req.query,
         provider=req.provider,
         model=req.model,
         top_k=req.top_k,
         only_filename=req.only_filename,
+        history=history,
     )
 
     # Save assistant response
@@ -91,7 +106,7 @@ def chat(req: ChatRequest):
 
 
 @app.get("/conversations/{conversation_id}/messages")
-def list_messages(conversation_id: int):
+def list_messages(conversation_id: str):
     return {
         "conversation_id": conversation_id,
         "messages": get_messages(conversation_id),
