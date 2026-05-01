@@ -10,9 +10,16 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
 from app.rag.pipeline import answer_question
-from app.db.history import create_conversation, add_message, get_messages, ensure_db
+from app.db.history import (
+    create_conversation,
+    add_message,
+    get_messages,
+    list_conversations,
+    delete_conversation,
+    ensure_db,
+)
 
-app = FastAPI(title="RAG Bot API", version="0.4.0")
+app = FastAPI(title="RAG Bot API", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +40,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[Union[str, int]] = None
 
     @model_validator(mode="after")
-    def convert_id(self) -> 'ChatRequest':
+    def convert_id(self) -> "ChatRequest":
         if self.conversation_id is not None:
             self.conversation_id = str(self.conversation_id)
         return self
@@ -67,6 +74,29 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/conversations")
+def get_conversations():
+    return {
+        "conversations": list_conversations(),
+    }
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def list_messages(conversation_id: str):
+    return {
+        "conversation_id": conversation_id,
+        "messages": get_messages(conversation_id),
+    }
+
+
+@app.delete("/conversations/{conversation_id}")
+def remove_conversation(conversation_id: str):
+    deleted = delete_conversation(int(conversation_id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"message": "deleted", "conversation_id": conversation_id}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -103,14 +133,6 @@ def chat(req: ChatRequest):
     if req.debug:
         resp["contexts"] = contexts
     return resp
-
-
-@app.get("/conversations/{conversation_id}/messages")
-def list_messages(conversation_id: str):
-    return {
-        "conversation_id": conversation_id,
-        "messages": get_messages(conversation_id),
-    }
 
 
 @app.post("/documents/upload")
