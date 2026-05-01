@@ -3,7 +3,7 @@ from typing import Optional
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, _embed_texts as embed_texts
+from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, embed_texts
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 PDF_DIR = BASE_DIR / "data" / "pdfs"
