@@ -2,17 +2,29 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
 import shutil
+import os
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import Response, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
 from app.rag.pipeline import answer_question
-from app.db.history import create_conversation, add_message, get_messages, ensure_db
+from app.db.history import (
+    create_conversation,
+    add_message,
+    get_messages,
+    list_conversations,
+    delete_conversation,
+    ensure_db,
+)
 
-app = FastAPI(title="RAG Bot API", version="0.4.0")
+app = FastAPI(title="RAG Bot API", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,9 +43,12 @@ class ChatRequest(BaseModel):
     only_filename: Optional[str] = None
     debug: bool = False
     conversation_id: Optional[Union[str, int]] = None
+    hybrid: bool = True
+    vector_weight: float = Field(default=0.6, ge=0.0, le=1.0)
+    bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def convert_id(self) -> 'ChatRequest':
+    def convert_id(self) -> "ChatRequest":
         if self.conversation_id is not None:
             self.conversation_id = str(self.conversation_id)
         return self
@@ -62,6 +77,23 @@ class ChatResponse(BaseModel):
 @app.on_event("startup")
 def startup():
     ensure_db()
+    
+    # Pre-load embedding model on startup
+    from app.rag.pipeline import get_embedder
+    get_embedder()
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(content=b"", media_type="image/x-icon")
+
+
+@app.get("/", include_in_schema=False)
+async def serve_ui():
+    # Calculate the path to app/web/index.html relative to this file
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    file_path = os.path.join(base_dir, "web", "index.html")
+    return FileResponse(file_path)
 
 
 @app.get("/health")
@@ -69,10 +101,33 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/conversations")
+def get_conversations():
+    return {
+        "conversations": list_conversations(),
+    }
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def list_messages(conversation_id: str):
+    return {
+        "conversation_id": conversation_id,
+        "messages": get_messages(conversation_id),
+    }
+
+
+@app.delete("/conversations/{conversation_id}")
+def remove_conversation(conversation_id: str):
+    deleted = delete_conversation(int(conversation_id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"message": "deleted", "conversation_id": conversation_id}
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     # Create or use existing conversation
-    conversation_id = req.conversation_id or create_conversation("New Chat")
+    conversation_id = str(req.conversation_id or create_conversation("New Chat"))
 
     # Get prior history BEFORE saving current message
     history = get_messages(conversation_id)
@@ -90,6 +145,9 @@ def chat(req: ChatRequest):
         top_k=req.top_k,
         only_filename=req.only_filename,
         history=history,
+        hybrid=req.hybrid,
+        vector_weight=req.vector_weight,
+        bm25_weight=req.bm25_weight,
     )
 
     # Save assistant response
@@ -103,14 +161,6 @@ def chat(req: ChatRequest):
     if req.debug:
         resp["contexts"] = contexts
     return resp
-
-
-@app.get("/conversations/{conversation_id}/messages")
-def list_messages(conversation_id: str):
-    return {
-        "conversation_id": conversation_id,
-        "messages": get_messages(conversation_id),
-    }
 
 
 @app.post("/documents/upload")

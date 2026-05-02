@@ -3,7 +3,7 @@ from typing import Optional
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, embed_texts
+from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, embed_texts, get_embedder
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 PDF_DIR = BASE_DIR / "data" / "pdfs"
@@ -24,7 +24,7 @@ def ingest_pdf_file(pdf_path: str, client: Optional[QdrantClient] = None) -> int
     if client is None:
         client = QdrantClient(url="http://localhost:6333")
 
-    embedder = SentenceTransformer(EMBED_MODEL_NAME)
+    embedder = get_embedder()
 
     # Ensure collection exists
     test_vec = embedder.encode(["test"], normalize_embeddings=True)

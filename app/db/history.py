@@ -61,3 +61,17 @@ def list_conversations() -> List[Dict[str, Any]]:
     rows = cur.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def delete_conversation(conversation_id: int) -> bool:
+    ensure_db()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+    cur.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    
+    deleted = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted    

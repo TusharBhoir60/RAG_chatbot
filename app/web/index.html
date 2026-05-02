@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAG Bot UI</title>
+  <link rel="icon" href="data:," />
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; max-width: 900px; }
+    h1 { margin-bottom: 10px; }
+    textarea { width: 100%; height: 90px; }
+    button { padding: 8px 14px; margin-top: 8px; }
+    .row { margin: 12px 0; }
+    .chat { background: #f6f6f6; padding: 12px; border-radius: 8px; }
+    .answer { white-space: pre-wrap; margin-top: 10px; }
+    .citations { font-size: 0.9em; color: #444; margin-top: 6px; }
+    .contexts { margin-top: 8px; font-size: 0.85em; color: #666; }
+    select, input { padding: 6px; }
+  </style>
+</head>
+<body>
+  <h1>RAG Bot UI</h1>
+
+  <div class="row" style="background:#eaf2f8; padding: 12px; border-radius: 8px;">
+    <label style="font-weight:bold;">Upload PDF to Database:</label><br/>
+    <input type="file" id="pdfFile" accept=".pdf" />
+    <button onclick="uploadAndIngest()">Upload & Ingest</button>
+    <span id="uploadStatus" style="font-size:0.9em; margin-left: 10px;"></span>
+  </div>
+
+  <div class="row">
+    <label>Conversation:</label>
+    <select id="conversationSelect"></select>
+    <button onclick="refreshConversations()">Refresh</button>
+    <button onclick="startNewConversation()">New Chat</button>
+    <button onclick="deleteConversation()">Delete</button>
+  </div>
+
+  <div class="row">
+    <label>Filename Filter (optional):</label>
+    <input id="onlyFilename" placeholder="auctionhub.pdf" />
+  </div>
+
+  <div class="row">
+    <label><input type="checkbox" id="debugToggle" /> Debug (show contexts)</label>
+  </div>
+
+  <div class="row">
+    <textarea id="queryInput" placeholder="Ask a question..."></textarea>
+    <button onclick="sendChat()">Send</button>
+  </div>
+
+  <div class="chat">
+    <div><strong>Answer:</strong></div>
+    <div id="answerBox" class="answer">&mdash;</div>
+    <div id="citationsBox" class="citations"></div>
+    <div id="contextsBox" class="contexts"></div>
+  </div>
+
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+
+async function refreshConversations() {
+  const res = await fetch(`${API_BASE}/conversations`);
+  const data = await res.json();
+  const select = document.getElementById("conversationSelect");
+  select.innerHTML = "";
+
+  data.conversations.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = `#${c.id} (${c.message_count} msgs)`;
+    select.appendChild(opt);
+  });
+}
+
+async function startNewConversation() {
+  // create a conversation by calling /chat with a dummy "hello"
+  const res = await fetch(`${API_BASE}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: "Hello",
+      provider: "ollama",
+      model: "llama3",
+      top_k: 4, 
+      debug: false
+    })
+  });
+  const data = await res.json();
+  await refreshConversations();
+  document.getElementById("conversationSelect").value = data.conversation_id;
+}
+
+async function deleteConversation() {
+  const conversationId = document.getElementById("conversationSelect").value;
+  if (!conversationId) return alert("Select a conversation to delete.");
+  
+  if (!confirm("Are you sure you want to delete this conversation?")) return;
+
+  const res = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+    method: "DELETE"
+  });
+
+  if (res.ok) {
+    await refreshConversations();
+    document.getElementById("answerBox").textContent = "\u2014";
+    document.getElementById("citationsBox").textContent = "";
+    document.getElementById("queryInput").value = "";
+  } else {
+    alert("Failed to delete conversation.");
+  }
+}
+
+async function sendChat() {
+  const query = document.getElementById("queryInput").value.trim();
+  const conversationId = document.getElementById("conversationSelect").value;
+  const onlyFilename = document.getElementById("onlyFilename").value.trim();
+  const debug = document.getElementById("debugToggle").checked;
+
+  if (!query) return alert("Enter a question");
+
+  const payload = {
+    query,
+    provider: "ollama",
+    model: "llama3",
+    top_k: 6,
+    debug
+  };
+
+  if (conversationId) payload.conversation_id = conversationId;
+  if (onlyFilename) payload.only_filename = onlyFilename;
+
+  const res = await fetch(`${API_BASE}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json();
+
+  document.getElementById("answerBox").textContent = data.answer || "\u2014";
+
+  if (data.citations && data.citations.length > 0) {
+    document.getElementById("citationsBox").textContent =
+      "Citations: " + data.citations.map(c => `${c.filename}:${c.page}`).join(", ");
+  } else {
+    document.getElementById("citationsBox").textContent = "";
+  }
+
+  if (debug && data.contexts) {
+    document.getElementById("contextsBox").textContent =
+      data.contexts.map(c => `[${c.filename}:${c.page}] ${c.text.slice(0,120)}...`).join("\n");
+  } else {
+    document.getElementById("contextsBox").textContent = "";
+  }
+
+  await refreshConversations();
+}
+
+async function uploadAndIngest() {
+  const fileInput = document.getElementById("pdfFile");
+  const file = fileInput.files[0];
+  if (!file) return alert("Please select a PDF file first.");
+
+  const status = document.getElementById("uploadStatus");
+  status.style.color = "blue";
+  status.textContent = "Uploading file...";
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const uploadRes = await fetch(`${API_BASE}/documents/upload`, {
+      method: "POST",
+      body: formData
+    });
+    
+    if (!uploadRes.ok) {
+       const err = await uploadRes.json();
+       status.style.color = "red";
+       status.textContent = "Upload failed: " + (err.detail || "Unknown error");
+       return;
+    }
+    const uploadData = await uploadRes.json();
+
+    status.textContent = "Ingesting vectors (this might take a moment)...";
+    const filename = uploadData.filename;
+    
+    const ingestRes = await fetch(`${API_BASE}/documents/${filename}/ingest`, {
+      method: "POST"
+    });
+    
+    if (!ingestRes.ok) {
+       const err = await ingestRes.json();
+       status.style.color = "red";
+       status.textContent = "Ingest failed: " + (err.detail || "Unknown error");
+       return;
+    }
+    
+    const ingestData = await ingestRes.json();
+    status.style.color = "green";
+    status.textContent = `Success! Added ${ingestData.chunks_inserted} chunks to Qdrant.`;
+    fileInput.value = "";
+    
+  } catch (e) {
+    status.style.color = "red";
+    status.textContent = "Error: " + e.message;
+  }
+}
+
+refreshConversations();
+</script>
+</body>
+</html>
