@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import Response, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
@@ -38,6 +40,9 @@ class ChatRequest(BaseModel):
     only_filename: Optional[str] = None
     debug: bool = False
     conversation_id: Optional[Union[str, int]] = None
+    hybrid: bool = True
+    vector_weight: float = Field(default=0.6, ge=0.0, le=1.0)
+    bm25_weight: float = Field(default=0.4, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def convert_id(self) -> "ChatRequest":
@@ -71,6 +76,17 @@ def startup():
     ensure_db()
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(content=b"", media_type="image/x-icon")
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def get_ui():
+    index_path = Path(__file__).parent.parent / "web" / "index.html"
+    return index_path.read_text()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -102,7 +118,7 @@ def remove_conversation(conversation_id: str):
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     # Create or use existing conversation
-    conversation_id = req.conversation_id or create_conversation("New Chat")
+    conversation_id = str(req.conversation_id or create_conversation("New Chat"))
 
     # Get prior history BEFORE saving current message
     history = get_messages(conversation_id)
@@ -120,6 +136,9 @@ def chat(req: ChatRequest):
         top_k=req.top_k,
         only_filename=req.only_filename,
         history=history,
+        hybrid=req.hybrid,
+        vector_weight=req.vector_weight,
+        bm25_weight=req.bm25_weight,
     )
 
     # Save assistant response
