@@ -12,6 +12,15 @@ from rank_bm25 import BM25Okapi
 COLLECTION = "pdf_chunks"
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
+_EMBEDDER = None
+
+def get_embedder() -> SentenceTransformer:
+    global _EMBEDDER
+    if _EMBEDDER is None:
+        print(f"Loading embedding model {EMBED_MODEL_NAME}...")
+        _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
+    return _EMBEDDER
+
 
 def embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
     vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
@@ -29,7 +38,7 @@ def retrieve(
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
     client = QdrantClient(url=qdrant_url)
-    embedder = SentenceTransformer(EMBED_MODEL_NAME)
+    embedder = get_embedder()
 
     qvec = embed_texts(embedder, [query])[0].tolist()
 

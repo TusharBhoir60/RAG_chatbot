@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
 import shutil
+import os
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response, HTMLResponse
+from fastapi.responses import Response, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
@@ -74,6 +77,10 @@ class ChatResponse(BaseModel):
 @app.on_event("startup")
 def startup():
     ensure_db()
+    
+    # Pre-load embedding model on startup
+    from app.rag.pipeline import get_embedder
+    get_embedder()
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -81,10 +88,12 @@ async def favicon():
     return Response(content=b"", media_type="image/x-icon")
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def get_ui():
-    index_path = Path(__file__).parent.parent / "web" / "index.html"
-    return index_path.read_text()
+@app.get("/", include_in_schema=False)
+async def serve_ui():
+    # Calculate the path to app/web/index.html relative to this file
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    file_path = os.path.join(base_dir, "web", "index.html")
+    return FileResponse(file_path)
 
 
 @app.get("/health")

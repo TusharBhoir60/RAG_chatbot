@@ -20,6 +20,13 @@
 <body>
   <h1>RAG Bot UI</h1>
 
+  <div class="row" style="background:#eaf2f8; padding: 12px; border-radius: 8px;">
+    <label style="font-weight:bold;">Upload PDF to Database:</label><br/>
+    <input type="file" id="pdfFile" accept=".pdf" />
+    <button onclick="uploadAndIngest()">Upload & Ingest</button>
+    <span id="uploadStatus" style="font-size:0.9em; margin-left: 10px;"></span>
+  </div>
+
   <div class="row">
     <label>Conversation:</label>
     <select id="conversationSelect"></select>
@@ -75,7 +82,7 @@ async function startNewConversation() {
       query: "Hello",
       provider: "ollama",
       model: "llama3",
-      top_k: 4,
+      top_k: 4, 
       debug: false
     })
   });
@@ -149,6 +156,58 @@ async function sendChat() {
 
   await refreshConversations();
 }
+
+async function uploadAndIngest() {
+  const fileInput = document.getElementById("pdfFile");
+  const file = fileInput.files[0];
+  if (!file) return alert("Please select a PDF file first.");
+
+  const status = document.getElementById("uploadStatus");
+  status.style.color = "blue";
+  status.textContent = "Uploading file...";
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const uploadRes = await fetch(`${API_BASE}/documents/upload`, {
+      method: "POST",
+      body: formData
+    });
+    
+    if (!uploadRes.ok) {
+       const err = await uploadRes.json();
+       status.style.color = "red";
+       status.textContent = "Upload failed: " + (err.detail || "Unknown error");
+       return;
+    }
+    const uploadData = await uploadRes.json();
+
+    status.textContent = "Ingesting vectors (this might take a moment)...";
+    const filename = uploadData.filename;
+    
+    const ingestRes = await fetch(`${API_BASE}/documents/${filename}/ingest`, {
+      method: "POST"
+    });
+    
+    if (!ingestRes.ok) {
+       const err = await ingestRes.json();
+       status.style.color = "red";
+       status.textContent = "Ingest failed: " + (err.detail || "Unknown error");
+       return;
+    }
+    
+    const ingestData = await ingestRes.json();
+    status.style.color = "green";
+    status.textContent = `Success! Added ${ingestData.chunks_inserted} chunks to Qdrant.`;
+    fileInput.value = "";
+    
+  } catch (e) {
+    status.style.color = "red";
+    status.textContent = "Error: " + e.message;
+  }
+}
+
 refreshConversations();
 </script>
 </body>
