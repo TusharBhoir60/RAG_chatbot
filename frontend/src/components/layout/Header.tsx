@@ -17,9 +17,10 @@ interface HeaderProps {
   currentModel: string;
   onModelSelect?: (model: string) => void;
   latencyMs?: number;
+  onGoHome?: () => void;
 }
 
-export function Header({ currentModel, onModelSelect, latencyMs }: HeaderProps) {
+export function Header({ currentModel, onModelSelect, latencyMs, onGoHome }: HeaderProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -35,12 +36,15 @@ export function Header({ currentModel, onModelSelect, latencyMs }: HeaderProps) 
 
   return (
     <header className="flex-shrink-0 h-16 px-6 flex items-center justify-between border-b border-white/5 bg-zinc-950/50 backdrop-blur-md z-30">
-      <div className="flex items-center gap-3">
+      <button 
+        onClick={onGoHome}
+        className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+      >
         <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
           <div className="w-4 h-4 rounded-sm bg-gradient-to-br from-indigo-400 to-emerald-400" />
         </div>
         <span className="font-semibold text-zinc-100 tracking-tight">RAG Engine</span>
-      </div>
+      </button>
 
       <div className="flex items-center gap-4">
         {/* Interactive Model Selector Dropdown */}

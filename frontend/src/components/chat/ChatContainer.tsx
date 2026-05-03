@@ -1,40 +1,43 @@
 'use client';
 
-import { useChatStream } from '@/hooks/useChatStream';
 import { EmptyState } from './EmptyState';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import { Header } from '../layout/Header';
 import { cn } from '@/lib/utils';
-import { useEffect } from 'react';
+import { useChatStream } from '@/hooks/useChatStream';
 
-export function ChatContainer() {
+interface ChatContainerProps {
+  state: ReturnType<typeof useChatStream>;
+}
+
+export function ChatContainer({ state }: ChatContainerProps) {
   const { 
     messages, 
     isGenerating, 
     currentModel, 
+    setCurrentModel,
     sendMessage, 
     stopGeneration 
-  } = useChatStream();
-
-  // Add/remove fast aurora animation based on generation state
-  useEffect(() => {
-    if (isGenerating) {
-      document.body.classList.add('aurora-fast');
-    } else {
-      document.body.classList.remove('aurora-fast');
-    }
-  }, [isGenerating]);
+  } = state;
 
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
   const currentLatency = lastMessage?.metadata?.latencyMs;
 
   return (
     <div className="flex flex-col h-full bg-zinc-950/40 relative">
-      <Header currentModel={currentModel} latencyMs={currentLatency} />
+      <Header 
+        currentModel={currentModel} 
+        onModelSelect={setCurrentModel}
+        latencyMs={currentLatency}
+        onGoHome={state.clearChat}
+      />
       
       {messages.length === 0 ? (
-        <EmptyState onSelectQuery={sendMessage} />
+        <EmptyState
+          onSelectQuery={sendMessage}
+          disabled={isGenerating}
+        />
       ) : (
         <MessageList messages={messages} />
       )}

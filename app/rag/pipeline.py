@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import logging
 import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
+from qdrant_client.http.exceptions import UnexpectedResponse
 from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
+
+from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
+
+logger = logging.getLogger(__name__)
 
 # Must match your existing collection name
 COLLECTION = "pdf_chunks"
@@ -14,10 +20,102 @@ EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 _EMBEDDER = None
 
+_OLLAMA_UNAVAILABLE_MSG = (
+    "The language model service (Ollama) is unavailable or did not respond in time. "
+    "Ensure Ollama is running (e.g. `ollama serve`) and the model is pulled."
+)
+
+
+def _coerce_retrieval_error(exc: BaseException) -> RetrievalServiceError:
+    """Map Qdrant / network failures to a single retrieval error type."""
+    if isinstance(exc, RetrievalServiceError):
+        return exc
+    logger.warning("Qdrant retrieval failure: %s", exc, exc_info=True)
+    if isinstance(exc, (UnexpectedResponse, ConnectionError, TimeoutError, OSError)):
+        return RetrievalServiceError(
+            "Vector retrieval (Qdrant) failed. Ensure Qdrant is running and reachable.",
+            cause=exc,
+        )
+    try:
+        import httpx
+    except ImportError:
+        httpx = None  # type: ignore
+    if httpx is not None and isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ),
+    ):
+        return RetrievalServiceError(
+            "Vector retrieval (Qdrant) failed. Ensure Qdrant is running and reachable.",
+            cause=exc,
+        )
+    return RetrievalServiceError(
+        "Vector retrieval (Qdrant) failed due to an unexpected error.",
+        cause=exc,
+    )
+
+
+def _map_ollama_http_error(exc: BaseException) -> OllamaServiceError | None:
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        try:
+            code = int(status)
+        except (TypeError, ValueError):
+            code = None
+        if code == 404:
+            return OllamaServiceError(
+                "The requested model was not found in Ollama. "
+                "Pull it with `ollama pull <model>`.",
+                cause=exc,
+            )
+        if code is not None and code >= 500:
+            return OllamaServiceError(_OLLAMA_UNAVAILABLE_MSG, cause=exc)
+    return None
+
+
+def _should_treat_as_ollama_unreachable(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError, BrokenPipeError, OSError)):
+        return True
+    try:
+        import httpx
+    except ImportError:
+        httpx = None  # type: ignore
+    if httpx is not None and isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ),
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(
+        k in msg
+        for k in (
+            "connection",
+            "refused",
+            "timeout",
+            "timed out",
+            "unreachable",
+            "actively refused",
+        )
+    )
+
+
 def get_embedder() -> SentenceTransformer:
     global _EMBEDDER
     if _EMBEDDER is None:
-        print(f"Loading embedding model {EMBED_MODEL_NAME}...")
+        logger.info("Loading embedding model %s", EMBED_MODEL_NAME)
         _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
     return _EMBEDDER
 
@@ -37,26 +135,33 @@ def retrieve(
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
-    client = QdrantClient(url=qdrant_url)
-    embedder = get_embedder()
+    try:
+        client = QdrantClient(url=qdrant_url)
+        embedder = get_embedder()
 
-    qvec = embed_texts(embedder, [query])[0].tolist()
+        qvec = embed_texts(embedder, [query])[0].tolist()
 
-    qdrant_filter = None
-    if only_filename:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        qdrant_filter = None
+        if only_filename:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        qdrant_filter = Filter(
-            must=[FieldCondition(key="filename", match=MatchValue(value=only_filename))]
+            qdrant_filter = Filter(
+                must=[
+                    FieldCondition(key="filename", match=MatchValue(value=only_filename))
+                ]
+            )
+
+        hits = client.search(
+            collection_name=COLLECTION,
+            query_vector=qvec,
+            limit=top_k,
+            with_payload=True,
+            query_filter=qdrant_filter,
         )
-
-    hits = client.search(
-        collection_name=COLLECTION,
-        query_vector=qvec,
-        limit=top_k,
-        with_payload=True,
-        query_filter=qdrant_filter,
-    )
+    except RetrievalServiceError:
+        raise
+    except Exception as exc:
+        raise _coerce_retrieval_error(exc) from exc
 
     contexts: List[Dict[str, Any]] = []
     for h in hits:
@@ -82,40 +187,47 @@ def scroll_all_payloads(
     only_filename: Optional[str] = None,
     limit: int = 256,
 ) -> List[Dict[str, Any]]:
-    qdrant_filter = None
-    if only_filename:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+    try:
+        qdrant_filter = None
+        if only_filename:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        qdrant_filter = Filter(
-            must=[FieldCondition(key="filename", match=MatchValue(value=only_filename))]
-        )
-
-    all_points: List[Dict[str, Any]] = []
-    offset = None
-
-    while True:
-        points, offset = client.scroll(
-            collection_name=COLLECTION,
-            scroll_filter=qdrant_filter,
-            limit=limit,
-            with_payload=True,
-            offset=offset,
-        )
-        for p in points:
-            payload = p.payload or {}
-            all_points.append(
-                {
-                    "id": str(p.id),
-                    "filename": payload.get("filename", "unknown"),
-                    "page": payload.get("page", None),
-                    "chunk_index": payload.get("chunk_index", None),
-                    "text": payload.get("text", ""),
-                }
+            qdrant_filter = Filter(
+                must=[
+                    FieldCondition(key="filename", match=MatchValue(value=only_filename))
+                ]
             )
-        if offset is None:
-            break
 
-    return all_points
+        all_points: List[Dict[str, Any]] = []
+        offset = None
+
+        while True:
+            points, offset = client.scroll(
+                collection_name=COLLECTION,
+                scroll_filter=qdrant_filter,
+                limit=limit,
+                with_payload=True,
+                offset=offset,
+            )
+            for p in points:
+                payload = p.payload or {}
+                all_points.append(
+                    {
+                        "id": str(p.id),
+                        "filename": payload.get("filename", "unknown"),
+                        "page": payload.get("page", None),
+                        "chunk_index": payload.get("chunk_index", None),
+                        "text": payload.get("text", ""),
+                    }
+                )
+            if offset is None:
+                break
+
+        return all_points
+    except RetrievalServiceError:
+        raise
+    except Exception as exc:
+        raise _coerce_retrieval_error(exc) from exc
 
 
 def bm25_search(
@@ -124,37 +236,42 @@ def bm25_search(
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
-    client = QdrantClient(url=qdrant_url)
-    corpus = scroll_all_payloads(client, only_filename=only_filename)
+    try:
+        client = QdrantClient(url=qdrant_url)
+        corpus = scroll_all_payloads(client, only_filename=only_filename)
 
-    if not corpus:
-        return []
+        if not corpus:
+            return []
 
-    tokenized_corpus = [tokenize(c["text"]) for c in corpus]
-    bm25 = BM25Okapi(tokenized_corpus)
+        tokenized_corpus = [tokenize(c["text"]) for c in corpus]
+        bm25 = BM25Okapi(tokenized_corpus)
 
-    query_tokens = tokenize(query)
-    scores = bm25.get_scores(query_tokens)
+        query_tokens = tokenize(query)
+        scores = bm25.get_scores(query_tokens)
 
-    top_indices = np.argsort(scores)[::-1][:top_k]
+        top_indices = np.argsort(scores)[::-1][:top_k]
 
-    contexts = []
-    for idx in top_indices:
-        c = corpus[int(idx)]
-        contexts.append(
-            {
-                "id": c["id"],
-                "filename": c["filename"],
-                "page": c["page"],
-                "chunk_index": c["chunk_index"],
-                "text": c["text"],
-                "score": float(scores[idx]),
-                "vector_score": 0.0,
-                "bm25_score": float(scores[idx]),
-            }
-        )
+        contexts = []
+        for idx in top_indices:
+            c = corpus[int(idx)]
+            contexts.append(
+                {
+                    "id": c["id"],
+                    "filename": c["filename"],
+                    "page": c["page"],
+                    "chunk_index": c["chunk_index"],
+                    "text": c["text"],
+                    "score": float(scores[idx]),
+                    "vector_score": 0.0,
+                    "bm25_score": float(scores[idx]),
+                }
+            )
 
-    return contexts
+        return contexts
+    except RetrievalServiceError:
+        raise
+    except Exception as exc:
+        raise _coerce_retrieval_error(exc) from exc
 
 
 def normalize_score_map(score_map: Dict[str, float]) -> Dict[str, float]:
@@ -270,11 +387,24 @@ def generate(provider: str, model: str, prompt: str) -> str:
     if provider == "ollama":
         import ollama
 
-        resp = ollama.chat(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.2},
-        )
+        try:
+            resp = ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2},
+            )
+        except OllamaServiceError:
+            raise
+        except Exception as exc:
+            mapped = _map_ollama_http_error(exc)
+            if mapped is not None:
+                logger.warning("Ollama request failed: %s", exc, exc_info=True)
+                raise mapped from exc
+            if _should_treat_as_ollama_unreachable(exc):
+                logger.warning("Ollama unreachable or timed out: %s", exc, exc_info=True)
+                raise OllamaServiceError(_OLLAMA_UNAVAILABLE_MSG, cause=exc) from exc
+            logger.exception("Unexpected error from Ollama")
+            raise
         return resp["message"]["content"]
 
     if provider == "openai":
