@@ -28,8 +28,18 @@ export function useChatStream() {
   // State for the sidebar
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
+  const [stats, setStats] = useState<Stats | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const data = await ApiClient.get<Stats>('/stats');
+      setStats(data);
+    } catch (error) {
+      console.error('Failed to fetch stats:', error);
+    }
+  }, []);
 
   const fetchConversations = useCallback(async () => {
     setIsLoadingConversations(true);
@@ -51,7 +61,8 @@ export function useChatStream() {
   // Fetch conversations on mount
   useEffect(() => {
     fetchConversations();
-  }, [fetchConversations]);
+    fetchStats();
+  }, [fetchConversations, fetchStats]);
 
   const loadConversation = useCallback(async (id: string) => {
     if (abortControllerRef.current) {
@@ -108,7 +119,7 @@ export function useChatStream() {
     async (id: string) => {
       try {
         await ApiClient.delete(`/conversations/${id}`);
-        setConversations((prev) => prev.filter((c) => c.id !== id));
+        setConversations((prev) => prev.filter((c) => String(c.id) !== id));
         if (conversationId === id) {
           clearChat();
         }
@@ -148,16 +159,7 @@ export function useChatStream() {
       timestamp: new Date(),
     };
     
-    const assistantMessageId = (Date.now() + 1).toString();
-    const assistantMessage: Message = {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '', 
-      timestamp: new Date(),
-      isStreaming: true,
-    };
-
-    setMessages(prev => [...prev, userMessage, assistantMessage]);
+    setMessages(prev => [...prev, userMessage]);
     setIsGenerating(true);
     
     abortControllerRef.current = new AbortController();
@@ -200,28 +202,25 @@ export function useChatStream() {
         confidenceScore: 0.95,
       }));
 
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId ? { 
-          ...msg, 
-          content: response.answer,
-          isStreaming: false,
-          sources,
-          metadata: {
-            latencyMs,
-            model: currentModel,
-          }
-        } : msg
-      ));
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: response.answer,
+        timestamp: new Date(),
+        isStreaming: false,
+        sources,
+        metadata: {
+          latencyMs,
+          model: currentModel,
+        }
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
+      fetchStats();
 
     } catch (error: unknown) {
       if (isAbortError(error)) {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? { ...msg, isStreaming: false, content: msg.content || 'Stopped.' }
-              : msg
-          )
-        );
+        // Aborted
       } else {
         console.error('Chat API Error:', error);
         let toastMessage = 'Chat request failed. Check the API and Ollama.';
@@ -234,18 +233,16 @@ export function useChatStream() {
           toastMessage = error.message;
         }
         toast(toastMessage, 'error');
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? {
-                  ...msg,
-                  content:
-                    'Something went wrong while getting a reply. See the alert below or try again.',
-                  isStreaming: false,
-                }
-              : msg
-          )
-        );
+        setMessages(prev => [
+          ...prev, 
+          {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: 'Something went wrong while getting a reply. See the alert below or try again.',
+            timestamp: new Date(),
+            isStreaming: false,
+          }
+        ]);
       }
     } finally {
       setIsGenerating(false);
@@ -265,6 +262,8 @@ export function useChatStream() {
     conversations,
     isLoadingConversations,
     loadConversation,
-    deleteConversation
+    deleteConversation,
+    stats,
+    fetchStats
   };
 }

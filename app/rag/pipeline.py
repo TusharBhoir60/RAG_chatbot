@@ -136,7 +136,7 @@ def retrieve(
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
     try:
-        client = QdrantClient(url=qdrant_url)
+        client = QdrantClient(url=qdrant_url, timeout=10.0)
         embedder = get_embedder()
 
         qvec = embed_texts(embedder, [query])[0].tolist()
@@ -151,13 +151,13 @@ def retrieve(
                 ]
             )
 
-        hits = client.search(
+        hits = client.query_points(
             collection_name=COLLECTION,
-            query_vector=qvec,
+            query=qvec,
             limit=top_k,
             with_payload=True,
             query_filter=qdrant_filter,
-        )
+        ).points
     except RetrievalServiceError:
         raise
     except Exception as exc:
@@ -230,30 +230,60 @@ def scroll_all_payloads(
         raise _coerce_retrieval_error(exc) from exc
 
 
+_CACHED_CORPUS = None
+_CACHED_BM25 = None
+
+
+def build_bm25_cache(qdrant_url: str = "http://localhost:6333"):
+    global _CACHED_CORPUS, _CACHED_BM25
+    logger.info("Building global BM25 cache...")
+    try:
+        client = QdrantClient(url=qdrant_url, timeout=10.0)
+        corpus = scroll_all_payloads(client, only_filename=None)
+        if corpus:
+            tokenized_corpus = [tokenize(c["text"]) for c in corpus]
+            _CACHED_CORPUS = corpus
+            _CACHED_BM25 = BM25Okapi(tokenized_corpus)
+        else:
+            _CACHED_CORPUS = []
+            _CACHED_BM25 = None
+        logger.info("BM25 cache built with %d chunks.", len(corpus))
+    except Exception as exc:
+        logger.warning("Could not build BM25 cache: %s", exc)
+        _CACHED_CORPUS = []
+        _CACHED_BM25 = None
+
+
 def bm25_search(
     query: str,
     top_k: int = 6,
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
+    global _CACHED_CORPUS, _CACHED_BM25
     try:
-        client = QdrantClient(url=qdrant_url)
-        corpus = scroll_all_payloads(client, only_filename=only_filename)
+        if _CACHED_CORPUS is None or _CACHED_BM25 is None:
+            build_bm25_cache(qdrant_url)
 
-        if not corpus:
+        if not _CACHED_CORPUS or _CACHED_BM25 is None:
             return []
 
-        tokenized_corpus = [tokenize(c["text"]) for c in corpus]
-        bm25 = BM25Okapi(tokenized_corpus)
-
         query_tokens = tokenize(query)
-        scores = bm25.get_scores(query_tokens)
+        scores = _CACHED_BM25.get_scores(query_tokens)
 
-        top_indices = np.argsort(scores)[::-1][:top_k]
+        scored_corpus = []
+        for idx, score in enumerate(scores):
+            c = _CACHED_CORPUS[idx]
+            if only_filename and c["filename"] != only_filename:
+                continue
+            if score > 0:
+                scored_corpus.append((float(score), c))
+
+        scored_corpus.sort(key=lambda x: x[0], reverse=True)
+        top_items = scored_corpus[:top_k]
 
         contexts = []
-        for idx in top_indices:
-            c = corpus[int(idx)]
+        for score, c in top_items:
             contexts.append(
                 {
                     "id": c["id"],
@@ -261,9 +291,9 @@ def bm25_search(
                     "page": c["page"],
                     "chunk_index": c["chunk_index"],
                     "text": c["text"],
-                    "score": float(scores[idx]),
+                    "score": score,
                     "vector_score": 0.0,
-                    "bm25_score": float(scores[idx]),
+                    "bm25_score": score,
                 }
             )
 
@@ -386,9 +416,11 @@ def generate(provider: str, model: str, prompt: str) -> str:
 
     if provider == "ollama":
         import ollama
+        import os
 
         try:
-            resp = ollama.chat(
+            client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"), timeout=60.0)
+            resp = client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.2},
@@ -410,7 +442,7 @@ def generate(provider: str, model: str, prompt: str) -> str:
     if provider == "openai":
         from openai import OpenAI
 
-        client = OpenAI()
+        client = OpenAI(timeout=60.0)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -436,7 +468,7 @@ def extract_citations(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def answer_question(
     query: str,
     provider: str = "ollama",
-    model: str = "llama3",
+    model: str = "llama3:latest",
     top_k: int = 6,
     only_filename: Optional[str] = None,
     history: Optional[List[Dict[str, Any]]] = None,

@@ -12,6 +12,7 @@ interface ChatInputProps {
   onSendMessage: (message: string) => void;
   isGenerating: boolean;
   onStop: () => void;
+  onUploadSuccess?: () => void;
 }
 
 interface UploadResponse {
@@ -20,7 +21,7 @@ interface UploadResponse {
   saved_to: string;
 }
 
-export function ChatInput({ onSendMessage, isGenerating, onStop }: ChatInputProps) {
+export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess }: ChatInputProps) {
   const { toast } = useToast();
   const [input, setInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
@@ -63,6 +64,22 @@ export function ChatInput({ onSendMessage, isGenerating, onStop }: ChatInputProp
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Validation
+    const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+    const ALLOWED_TYPES = ['application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+    
+    if (file.size > MAX_SIZE) {
+      toast('File is too large. Max size is 10MB.', 'error');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      toast('Unsupported file type. Please upload PDF, TXT, or DOCX.', 'error');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     setIsUploading(true);
     setUploadSuccess(null);
 
@@ -85,6 +102,10 @@ export function ChatInput({ onSendMessage, isGenerating, onStop }: ChatInputProp
       setUploadSuccess(okMsg);
       toast(okMsg, 'success');
       window.setTimeout(() => setUploadSuccess(null), 5000);
+      
+      // Refresh stats
+      if (onUploadSuccess) onUploadSuccess();
+      
     } catch (error: unknown) {
       console.error('Failed to upload and ingest:', error);
       const msg =

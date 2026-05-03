@@ -32,4 +32,12 @@ export interface ChatState {
 export interface Conversation {
   id: string | number;
   message_count: number;
+  title?: string;
+}
+
+export interface Stats {
+  storage_used_gb: number;
+  storage_total_gb: number;
+  tokens_used: number;
+  tokens_total: number;
 }

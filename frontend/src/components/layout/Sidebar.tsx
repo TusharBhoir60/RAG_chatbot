@@ -1,8 +1,9 @@
 'use client';
 
-import { MessageSquare, Database, Plus, Trash2, Loader2 } from 'lucide-react';
-import { Conversation } from '@/types/rag';
+import { MessageSquare, Database, Plus, Trash2, Loader2, X } from 'lucide-react';
+import { Conversation, Stats } from '@/types/rag';
 import { cn } from '@/lib/utils';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface SidebarProps {
   onNewThread?: () => void;
@@ -11,6 +12,9 @@ interface SidebarProps {
   activeConversationId?: string | null;
   onSelectConversation?: (id: string) => void;
   onDeleteConversation?: (id: string) => void;
+  isOpen?: boolean;
+  onClose?: () => void;
+  stats?: Stats;
 }
 
 export function Sidebar({ 
@@ -19,10 +23,39 @@ export function Sidebar({
   isLoadingConversations = false,
   activeConversationId,
   onSelectConversation,
-  onDeleteConversation
+  onDeleteConversation,
+  isOpen = false,
+  onClose,
+  stats
 }: SidebarProps) {
   return (
-    <aside className="w-64 flex-shrink-0 flex flex-col h-full border-r border-white/5 bg-zinc-950/80 backdrop-blur-xl z-20">
+    <>
+      {/* Mobile Overlay */}
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
+          />
+        )}
+      </AnimatePresence>
+
+      <aside 
+        className={cn(
+          "w-64 flex-shrink-0 flex flex-col h-full border-r border-white/5 bg-zinc-950/95 md:bg-zinc-950/80 backdrop-blur-xl z-50",
+          "fixed md:relative top-0 left-0 transition-transform duration-300 ease-in-out",
+          isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        )}
+      >
+        <div className="flex items-center justify-between p-4 md:hidden border-b border-white/5">
+          <span className="font-semibold text-zinc-100">Menu</span>
+          <button onClick={onClose} className="p-2 -mr-2 text-zinc-400 hover:text-zinc-100">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
       <div className="p-4">
         <button 
           onClick={onNewThread}
@@ -60,7 +93,7 @@ export function Sidebar({
                     String(activeConversationId) === String(conv.id) ? "text-indigo-400" : "text-zinc-500 group-hover:text-zinc-300"
                   )} />
                   <span className="truncate flex-1">
-                    Thread {String(conv.id).substring(0, 8)}
+                    {conv.title?.trim() ? conv.title : `Thread ${String(conv.id).substring(0, 8)}`}
                   </span>
                 </div>
                 
@@ -91,24 +124,35 @@ export function Sidebar({
             <div>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-zinc-500">Storage Used</span>
-                <span className="text-zinc-300">4.2 GB / 10 GB</span>
+                <span className="text-zinc-300">
+                  {stats ? `${stats.storage_used_gb.toFixed(4)} GB` : '...'} / {stats ? `${stats.storage_total_gb} GB` : '...'}
+                </span>
               </div>
               <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                <div className="h-full bg-indigo-500 w-[42%]" />
+                <div 
+                  className="h-full bg-indigo-500 transition-all duration-500" 
+                  style={{ width: stats ? `${Math.min((stats.storage_used_gb / stats.storage_total_gb) * 100, 100)}%` : '0%' }}
+                />
               </div>
             </div>
             <div>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-zinc-500">API Tokens</span>
-                <span className="text-zinc-300">82k / 100k</span>
+                <span className="text-zinc-300">
+                  {stats ? `${(stats.tokens_used / 1000).toFixed(1)}k` : '...'} / {stats ? `${(stats.tokens_total / 1000).toFixed(0)}k` : '...'}
+                </span>
               </div>
               <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 w-[82%]" />
+                <div 
+                  className="h-full bg-emerald-500 transition-all duration-500" 
+                  style={{ width: stats ? `${Math.min((stats.tokens_used / stats.tokens_total) * 100, 100)}%` : '0%' }}
+                />
               </div>
             </div>
           </div>
         </div>
       </div>
     </aside>
+    </>
   );
 }
