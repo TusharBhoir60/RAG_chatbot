@@ -1,26 +1,93 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --font-sans: var(--font-inter);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #09090b; /* zinc-950 */
+    --foreground: #fafafa;
+    
+    /* Colors for Aurora gradient */
+    --aurora-1: 79 70 229; /* indigo-600 */
+    --aurora-2: 16 185 129; /* emerald-500 */
+    --aurora-3: 139 92 246; /* violet-500 */
+  }
+
+  body {
+    @apply bg-[var(--background)] text-[var(--foreground)] antialiased overflow-hidden selection:bg-indigo-500/30;
+    /* Basic aurora gradient base */
+    background-image: 
+      radial-gradient(circle at 15% 50%, rgba(var(--aurora-1), 0.08), transparent 25%),
+      radial-gradient(circle at 85% 30%, rgba(var(--aurora-2), 0.08), transparent 25%);
+    background-size: 150% 150%;
+    animation: aurora 15s ease infinite alternate;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Base aurora animation */
+@keyframes aurora {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@layer utilities {
+  /* Fast animation class to trigger when generating */
+  .aurora-fast {
+    animation-duration: 5s !important;
+    background-image: 
+      radial-gradient(circle at 20% 40%, rgba(var(--aurora-1), 0.15), transparent 30%),
+      radial-gradient(circle at 80% 60%, rgba(var(--aurora-2), 0.15), transparent 30%),
+      radial-gradient(circle at 50% 80%, rgba(var(--aurora-3), 0.1), transparent 30%) !important;
+  }
+
+  /* Glassmorphism utilities */
+  .glass-panel {
+    @apply backdrop-blur-2xl bg-white/[0.02] border border-white/5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)];
+  }
+
+  /* Typography utilities for long Markdown blocks */
+  .prose-readable {
+    @apply max-w-[65ch] leading-relaxed text-zinc-300;
+  }
+  
+  .prose-readable p {
+    @apply mb-4 last:mb-0;
+  }
+  
+  .prose-readable strong {
+    @apply text-zinc-100 font-medium;
+  }
+
+  .prose-readable h1, .prose-readable h2, .prose-readable h3 {
+    @apply text-zinc-50 font-semibold mb-3 mt-6;
+  }
+  
+  .prose-readable code {
+    @apply bg-zinc-900 px-1.5 py-0.5 rounded text-sm text-indigo-300 font-mono;
+  }
+}
+
+/* Custom scrollbar for webkit */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
