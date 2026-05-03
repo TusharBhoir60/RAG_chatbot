@@ -5,6 +5,7 @@ import { Sparkles, ArrowRight } from 'lucide-react';
 
 interface EmptyStateProps {
   onSelectQuery: (query: string) => void;
+  disabled?: boolean;
 }
 
 const SUGGESTED_QUERIES = [
@@ -14,7 +15,7 @@ const SUGGESTED_QUERIES = [
   "Summarize the recent changes to the ML microservices."
 ];
 
-export function EmptyState({ onSelectQuery }: EmptyStateProps) {
+export function EmptyState({ onSelectQuery, disabled = false }: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center justify-center h-full px-4 text-center max-w-2xl mx-auto w-full">
       <motion.div
@@ -44,8 +45,10 @@ export function EmptyState({ onSelectQuery }: EmptyStateProps) {
         {SUGGESTED_QUERIES.map((query, index) => (
           <button
             key={index}
+            type="button"
+            disabled={disabled}
             onClick={() => onSelectQuery(query)}
-            className="flex items-center justify-between text-left p-4 rounded-xl bg-zinc-900/50 border border-white/5 hover:bg-white/5 hover:border-white/10 transition-all group"
+            className="flex items-center justify-between text-left p-4 rounded-xl bg-zinc-900/50 border border-white/5 hover:bg-white/5 hover:border-white/10 transition-all group disabled:opacity-50 disabled:pointer-events-none disabled:cursor-not-allowed"
           >
             <span className="text-sm text-zinc-300 pr-4">{query}</span>
             <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center flex-shrink-0 group-hover:bg-indigo-500/20 transition-colors">

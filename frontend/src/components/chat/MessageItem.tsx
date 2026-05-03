@@ -2,7 +2,7 @@
 
 import { Message } from '@/types/rag';
 import { SourceChip } from './SourceChip';
-import { Sparkles, User } from 'lucide-react';
+import { Loader2, Sparkles, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 
@@ -79,7 +79,13 @@ export function MessageItem({ message }: { message: Message }) {
             {message.content ? (
               renderContent(message.content)
             ) : message.isStreaming ? (
-              <span className="inline-block w-2 h-4 bg-indigo-500 animate-pulse ml-1" />
+              <span className="inline-flex items-center gap-2 text-zinc-400 text-sm">
+                <Loader2
+                  className="w-4 h-4 animate-spin text-indigo-400 shrink-0"
+                  aria-hidden
+                />
+                <span className="animate-pulse">Generating response…</span>
+              </span>
             ) : null}
             
             {message.isStreaming && message.content && (

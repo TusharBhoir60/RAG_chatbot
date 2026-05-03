@@ -9,7 +9,7 @@ export interface Source {
   title: string;
   snippet: string;
   url?: string;
-  confidenceScore: number; // e.g., 0.98 for "98% Match"
+  confidenceScore: number;
 }
 
 export interface Message {
@@ -27,4 +27,9 @@ export interface ChatState {
   isGenerating: boolean;
   currentModel: string;
   error: string | null;
+}
+
+export interface Conversation {
+  id: string | number;
+  message_count: number;
 }

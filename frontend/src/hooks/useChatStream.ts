@@ -1,39 +1,98 @@
-import { useState, useCallback, useRef } from 'react';
-import { Message, Source } from '@/types/rag';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { useToast } from '@/context/ToastContext';
+import { ApiClient } from '@/lib/api/client';
+import { ApiError, isAbortError } from '@/lib/api/errors';
+import { Message, Source, Conversation } from '@/types/rag';
 
-// Mock data for sources
-const MOCK_SOURCES: Source[] = [
-  {
-    id: 'src-1',
-    title: 'Enterprise RAG Architecture',
-    snippet: 'Retrieval-Augmented Generation (RAG) integrates search mechanisms with LLMs to provide context-aware responses.',
-    confidenceScore: 0.98,
-  },
-  {
-    id: 'src-2',
-    title: 'Frontend UI/UX Guidelines',
-    snippet: 'Streaming text interfaces require layout animations to prevent visual jitter when new tokens are appended to the DOM.',
-    confidenceScore: 0.85,
-  }
-];
+interface ChatResponse {
+  answer: string;
+  citations: Array<{ filename: string; page: number | null }>;
+  contexts: unknown[];
+  conversation_id: string;
+}
 
-const MOCK_RESPONSE = `Here is a comprehensive overview of building an enterprise-grade RAG interface:
-
-RAG interfaces demand a high level of polish. We must ensure that **streaming text** doesn't cause layout jitter. Framer Motion's \`layout\` prop is perfect for this.
-
-### Key Considerations:
-1. **Latency Metrics**: Displaying inference speed builds trust.
-2. **Confidence Scores**: Showing how confident the retrieval system is.
-3. **Animations**: Smooth scaling and layout shifting.
-
-Would you like to explore the backend implementation next?`;
+interface BackendMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  id?: string;
+  timestamp?: string;
+}
 
 export function useChatStream() {
+  const { toast } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [currentModel, setCurrentModel] = useState('Gemini 3.1 Pro');
+  const [currentModel, setCurrentModel] = useState('llama3');
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  
+  // State for the sidebar
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const fetchConversations = useCallback(async () => {
+    setIsLoadingConversations(true);
+    try {
+      const data = await ApiClient.get<{ conversations: Conversation[] }>('/conversations');
+      setConversations(data.conversations || []);
+    } catch (error: unknown) {
+      console.error('Failed to fetch conversations:', error);
+      const msg =
+        error instanceof ApiError
+          ? error.message
+          : 'Could not load conversations. Is the API running?';
+      toast(msg, 'error');
+    } finally {
+      setIsLoadingConversations(false);
+    }
+  }, [toast]);
+
+  // Fetch conversations on mount
+  useEffect(() => {
+    fetchConversations();
+  }, [fetchConversations]);
+
+  const loadConversation = useCallback(async (id: string) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsGenerating(false);
+
+    try {
+      setConversationId(id);
+      const data = await ApiClient.get<{ messages: BackendMessage[] }>(
+        `/conversations/${id}/messages`
+      );
+      
+      // Map backend messages to frontend messages
+      const mappedMessages: Message[] = (data.messages || []).map((msg, idx) => ({
+        id: msg.id || `${id}-${idx}`,
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+        isStreaming: false,
+      }));
+      
+      setMessages(mappedMessages);
+    } catch (error: unknown) {
+      console.error('Failed to load conversation history:', error);
+      const msg =
+        error instanceof ApiError
+          ? error.message
+          : `Failed to load conversation ${id}.`;
+      toast(msg, 'error');
+      setMessages([
+        {
+          id: Date.now().toString(),
+          role: 'system',
+          content: 'Could not load this conversation. Try again or pick another thread.',
+          timestamp: new Date(),
+        },
+      ]);
+    }
+  }, [toast]);
 
   const clearChat = useCallback(() => {
     if (abortControllerRef.current) {
@@ -42,7 +101,28 @@ export function useChatStream() {
     }
     setMessages([]);
     setIsGenerating(false);
+    setConversationId(null);
   }, []);
+
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      try {
+        await ApiClient.delete(`/conversations/${id}`);
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+        if (conversationId === id) {
+          clearChat();
+        }
+      } catch (error: unknown) {
+        console.error('Failed to delete conversation:', error);
+        const msg =
+          error instanceof ApiError
+            ? error.message
+            : 'Could not delete conversation.';
+        toast(msg, 'error');
+      }
+    },
+    [conversationId, toast, clearChat]
+  );
 
   const stopGeneration = useCallback(() => {
     if (abortControllerRef.current) {
@@ -72,7 +152,7 @@ export function useChatStream() {
     const assistantMessage: Message = {
       id: assistantMessageId,
       role: 'assistant',
-      content: '',
+      content: '', 
       timestamp: new Date(),
       isStreaming: true,
     };
@@ -82,100 +162,95 @@ export function useChatStream() {
     
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
+    const startTime = Date.now();
     
-    /* 
-    ========================================================================
-    HOW IT WILL WORK WITH A REAL BACKEND (SSE / JSON LINES STREAMING)
-    ========================================================================
+    let isNewConversation = !conversationId;
+
     try {
-      const response = await fetch('http://localhost:8000/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, model: currentModel }),
+      const payload: Record<string, unknown> = {
+        query: content,
+        provider: 'ollama',
+        model: currentModel,
+        top_k: 5,
+        debug: false,
+      };
+      if (conversationId) {
+        payload.conversation_id = conversationId;
+      }
+
+      const response = await ApiClient.post<ChatResponse>('/chat', payload, {
         signal,
       });
 
-      if (!response.body) throw new Error('No readable stream available');
+      const latencyMs = Date.now() - startTime;
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let assistantContent = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        
-        // Example: Parsing SSE formats like: data: {"type": "token", "content": "hello"}
-        const lines = chunk.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = JSON.parse(line.slice(6));
-            
-            if (data.type === 'token') {
-              assistantContent += data.content;
-              setMessages(prev => prev.map(msg => 
-                msg.id === assistantMessageId ? { ...msg, content: assistantContent } : msg
-              ));
-            } else if (data.type === 'sources') {
-              setMessages(prev => prev.map(msg => 
-                msg.id === assistantMessageId ? { ...msg, sources: data.sources } : msg
-              ));
-            } else if (data.type === 'metadata') {
-              setMessages(prev => prev.map(msg => 
-                msg.id === assistantMessageId ? { ...msg, metadata: data.metadata } : msg
-              ));
-            }
-          }
+      if (response.conversation_id) {
+        setConversationId(response.conversation_id);
+        if (isNewConversation) {
+          // If this was a new conversation, refresh the sidebar list after it's created
+          fetchConversations();
         }
       }
-    } catch (error) {
-      if (error.name === 'AbortError') console.log('Generation aborted');
-      else console.error('Streaming error:', error);
-    } finally {
-      setIsGenerating(false);
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId ? { ...msg, isStreaming: false } : msg
-      ));
-    }
-    ========================================================================
-    */
 
-    // --- MOCK IMPLEMENTATION BELOW ---
-    await new Promise(resolve => setTimeout(resolve, 600)); // fake retrieval latency
-    
-    const tokens = MOCK_RESPONSE.split(' ');
-    let currentContent = '';
-    
-    for (let i = 0; i < tokens.length; i++) {
-      if (signal.aborted) break;
-      
-      currentContent += (i === 0 ? '' : ' ') + tokens[i];
-      
+      const sources: Source[] = (response.citations || []).map((cit, idx) => ({
+        id: `cit-${idx}`,
+        title: cit.filename,
+        snippet:
+          cit.page != null ? `Page: ${cit.page}` : 'Page: —',
+        confidenceScore: 0.95,
+      }));
+
       setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId ? { ...msg, content: currentContent } : msg
-      ));
-      
-      await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 60));
-    }
-    
-    if (!signal.aborted) {
-      setIsGenerating(false);
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId ? {
-          ...msg,
+        msg.id === assistantMessageId ? { 
+          ...msg, 
+          content: response.answer,
           isStreaming: false,
-          sources: MOCK_SOURCES,
+          sources,
           metadata: {
-            latencyMs: 600 + tokens.length * 50,
-            tokensUsed: tokens.length * 1.5,
+            latencyMs,
             model: currentModel,
           }
         } : msg
       ));
+
+    } catch (error: unknown) {
+      if (isAbortError(error)) {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, isStreaming: false, content: msg.content || 'Stopped.' }
+              : msg
+          )
+        );
+      } else {
+        console.error('Chat API Error:', error);
+        let toastMessage = 'Chat request failed. Check the API and Ollama.';
+        if (error instanceof ApiError) {
+          toastMessage =
+            error.status === 503
+              ? `Assistant unavailable: ${error.message}`
+              : error.message || toastMessage;
+        } else if (error instanceof Error && error.message) {
+          toastMessage = error.message;
+        }
+        toast(toastMessage, 'error');
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? {
+                  ...msg,
+                  content:
+                    'Something went wrong while getting a reply. See the alert below or try again.',
+                  isStreaming: false,
+                }
+              : msg
+          )
+        );
+      }
+    } finally {
+      setIsGenerating(false);
     }
-  }, [currentModel]);
+  }, [currentModel, conversationId, fetchConversations, toast]);
 
   return {
     messages,
@@ -184,6 +259,12 @@ export function useChatStream() {
     setCurrentModel,
     sendMessage,
     stopGeneration,
-    clearChat
+    clearChat,
+    conversationId,
+    // New exports for Sidebar
+    conversations,
+    isLoadingConversations,
+    loadConversation,
+    deleteConversation
   };
 }
