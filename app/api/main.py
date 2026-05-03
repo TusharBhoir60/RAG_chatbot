@@ -21,6 +21,7 @@ from app.db.history import (
     ensure_db,
     get_messages,
     list_conversations,
+    update_conversation_title,
 )
 from app.logging_config import setup_logging
 from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
@@ -67,7 +68,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=100_000)
     provider: Literal["ollama", "openai"] = "ollama"
-    model: str = Field(default="llama3", min_length=1, max_length=128)
+    model: str = Field(default="llama3:latest", min_length=1, max_length=128)
     top_k: int = Field(default=6, ge=1, le=20)
     only_filename: Optional[str] = None
     debug: bool = False
@@ -132,6 +133,19 @@ class ChatResponse(BaseModel):
     conversation_id: str
 
 
+def _title_from_query(query: str) -> str:
+    text = " ".join(query.strip().split())
+    if not text:
+        return "New Chat"
+    words = text.split(" ")
+    title = " ".join(words[:8])
+    if len(words) > 8:
+        title = f"{title}..."
+    if len(title) > 80:
+        title = f"{title[:77].rstrip()}..."
+    return title
+
+
 def _raw_contexts_to_chunks(raw: List[Dict[str, Any]]) -> List[ContextChunk]:
     """Strip extra retrieval fields so response matches ContextChunk exactly."""
     out: List[ContextChunk] = []
@@ -173,9 +187,10 @@ def startup():
     ensure_db()
 
     # Pre-load embedding model on startup
-    from app.rag.pipeline import get_embedder
+    from app.rag.pipeline import get_embedder, build_bm25_cache
 
     get_embedder()
+    build_bm25_cache()
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -201,6 +216,30 @@ def get_conversations():
     rows = list_conversations()
     logger.info("list_conversations count=%s", len(rows))
     return {"conversations": rows}
+
+@app.get("/stats")
+def get_stats():
+    # Calculate storage used by PDFs
+    pdf_dir = ensure_pdf_dir()
+    total_size_bytes = sum(f.stat().st_size for f in pdf_dir.glob("*.pdf") if f.is_file())
+    storage_used_gb = total_size_bytes / (1024 ** 3)
+    
+    # Calculate approximate tokens used (very rough estimate: words * 1.3)
+    # We'll just fetch all conversations and their messages, or a dummy for now
+    # Since we can't fetch all messages easily without a new DB query, let's just 
+    # estimate based on message count across all conversations.
+    conversations = list_conversations()
+    total_messages = sum(conv["message_count"] for conv in conversations)
+    
+    # Let's say average message is 150 tokens.
+    tokens_used = total_messages * 150
+    
+    return {
+        "storage_used_gb": round(storage_used_gb, 4),
+        "storage_total_gb": 10.0,
+        "tokens_used": tokens_used,
+        "tokens_total": 100000
+    }
 
 
 @app.get(
@@ -256,17 +295,20 @@ def chat(req: ChatRequest):
     # Create or use existing conversation (DB uses integer PK; expose string to clients)
     if req.conversation_id is not None:
         conv_int = int(req.conversation_id)
+        is_new_conversation = False
     else:
         conv_int = create_conversation("New Chat")
+        is_new_conversation = True
     conversation_id = str(conv_int)
 
-    # Get prior history BEFORE saving current message
-    history = get_messages(conv_int)
-    # Limit to last 6 messages
-    history = history[-6:] if len(history) > 6 else history
+    # Get prior history BEFORE saving current message, limited to last 6
+    history = get_messages(conv_int, limit=6)
 
     # Save user message
     add_message(conv_int, "user", req.query)
+
+    if is_new_conversation:
+        update_conversation_title(conv_int, _title_from_query(req.query))
 
     # Run RAG with history
     try:
@@ -347,6 +389,8 @@ def ingest_document(filename: str):
 
     try:
         inserted = ingest_pdf_file(str(pdf_path))
+        from app.rag.pipeline import build_bm25_cache
+        build_bm25_cache()
     except Exception as exc:
         logger.exception("document ingest failed path=%s", pdf_path)
         raise HTTPException(

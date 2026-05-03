@@ -9,9 +9,10 @@ import { useChatStream } from '@/hooks/useChatStream';
 
 interface ChatContainerProps {
   state: ReturnType<typeof useChatStream>;
+  onOpenSidebar?: () => void;
 }
 
-export function ChatContainer({ state }: ChatContainerProps) {
+export function ChatContainer({ state, onOpenSidebar }: ChatContainerProps) {
   const { 
     messages, 
     isGenerating, 
@@ -31,15 +32,16 @@ export function ChatContainer({ state }: ChatContainerProps) {
         onModelSelect={setCurrentModel}
         latencyMs={currentLatency}
         onGoHome={state.clearChat}
+        onOpenSidebar={onOpenSidebar}
       />
       
-      {messages.length === 0 ? (
+      {messages.length === 0 && !isGenerating ? (
         <EmptyState
           onSelectQuery={sendMessage}
           disabled={isGenerating}
         />
       ) : (
-        <MessageList messages={messages} />
+        <MessageList messages={messages} isGenerating={isGenerating} />
       )}
 
       <div className={cn(
@@ -50,6 +52,7 @@ export function ChatContainer({ state }: ChatContainerProps) {
           onSendMessage={sendMessage} 
           isGenerating={isGenerating} 
           onStop={stopGeneration} 
+          onUploadSuccess={state.fetchStats}
         />
       </div>
     </div>

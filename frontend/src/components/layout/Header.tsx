@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Zap, ChevronDown, Check } from 'lucide-react';
+import { Zap, ChevronDown, Check, Menu } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -18,9 +18,10 @@ interface HeaderProps {
   onModelSelect?: (model: string) => void;
   latencyMs?: number;
   onGoHome?: () => void;
+  onOpenSidebar?: () => void;
 }
 
-export function Header({ currentModel, onModelSelect, latencyMs, onGoHome }: HeaderProps) {
+export function Header({ currentModel, onModelSelect, latencyMs, onGoHome, onOpenSidebar }: HeaderProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -35,16 +36,26 @@ export function Header({ currentModel, onModelSelect, latencyMs, onGoHome }: Hea
   }, []);
 
   return (
-    <header className="flex-shrink-0 h-16 px-6 flex items-center justify-between border-b border-white/5 bg-zinc-950/50 backdrop-blur-md z-30">
-      <button 
-        onClick={onGoHome}
-        className="flex items-center gap-3 hover:opacity-80 transition-opacity"
-      >
-        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-          <div className="w-4 h-4 rounded-sm bg-gradient-to-br from-indigo-400 to-emerald-400" />
-        </div>
-        <span className="font-semibold text-zinc-100 tracking-tight">RAG Engine</span>
-      </button>
+    <header className="flex-shrink-0 h-16 px-4 md:px-6 flex items-center justify-between border-b border-white/5 bg-zinc-950/50 backdrop-blur-md z-30">
+      <div className="flex items-center gap-3 md:gap-4">
+        {onOpenSidebar && (
+          <button 
+            onClick={onOpenSidebar}
+            className="md:hidden p-2 -ml-2 rounded-md text-zinc-400 hover:text-zinc-100 hover:bg-white/5 transition-colors"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        )}
+        <button 
+          onClick={onGoHome}
+          className="flex items-center gap-2 md:gap-3 hover:opacity-80 transition-opacity"
+        >
+          <div className="flex items-center justify-center w-7 h-7 md:w-8 md:h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+            <div className="w-3.5 h-3.5 md:w-4 md:h-4 rounded-sm bg-gradient-to-br from-indigo-400 to-emerald-400" />
+          </div>
+          <span className="font-semibold text-zinc-100 tracking-tight text-base md:text-lg">RAG Engine</span>
+        </button>
+      </div>
 
       <div className="flex items-center gap-4">
         {/* Interactive Model Selector Dropdown */}
