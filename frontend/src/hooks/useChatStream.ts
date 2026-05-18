@@ -180,42 +180,109 @@ export function useChatStream() {
         payload.conversation_id = conversationId;
       }
 
-      const response = await ApiClient.post<ChatResponse>('/chat', payload, {
+      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+      const response = await fetch(`${backendUrl}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
         signal,
       });
 
-      const latencyMs = Date.now() - startTime;
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Server returned ${response.status}: ${errText}`);
+      }
 
-      if (response.conversation_id) {
-        setConversationId(response.conversation_id);
-        if (isNewConversation) {
-          // If this was a new conversation, refresh the sidebar list after it's created
-          fetchConversations();
+      if (!response.body) {
+        throw new Error("No response body returned for streaming.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let streamedAnswer = "";
+      let buffer = "";
+      
+      const assistantMessageId = (Date.now() + 1).toString();
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          // Pop the last element because it might be an incomplete line.
+          // It will be processed in the next chunk, or when the stream is done.
+          buffer = lines.pop() || "";
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6).trim();
+              if (!dataStr) continue;
+
+              try {
+                const data = JSON.parse(dataStr);
+                
+                if (data.type === 'meta') {
+                  const latencyMs = Date.now() - startTime;
+                  const sources: Source[] = (data.citations || []).map((cit: any, idx: number) => ({
+                    id: `cit-${idx}`,
+                    title: cit.filename,
+                    snippet: cit.page != null ? `Page: ${cit.page}` : 'Page: —',
+                    confidenceScore: 0.95,
+                  }));
+
+                  if (data.conversation_id) {
+                    setConversationId(data.conversation_id);
+                    if (isNewConversation) {
+                      fetchConversations();
+                    }
+                  }
+
+                  const assistantMessage: Message = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: '',
+                    timestamp: new Date(),
+                    isStreaming: true,
+                    sources,
+                    metadata: {
+                      latencyMs,
+                      model: currentModel,
+                    }
+                  };
+                  
+                  setMessages(prev => [...prev, assistantMessage]);
+                } else if (data.type === 'token') {
+                  streamedAnswer += data.content;
+                  setMessages(prev => 
+                    prev.map(msg => 
+                      msg.id === assistantMessageId 
+                        ? { ...msg, content: streamedAnswer } 
+                        : msg
+                    )
+                  );
+                } else if (data.type === 'done') {
+                  setMessages(prev => 
+                    prev.map(msg => 
+                      msg.id === assistantMessageId 
+                        ? { ...msg, isStreaming: false } 
+                        : msg
+                    )
+                  );
+                } else if (data.type === 'error') {
+                  throw new Error(data.content);
+                }
+              } catch (e) {
+                console.error("Error parsing SSE data line", line, e);
+              }
+            }
+          }
         }
       }
 
-      const sources: Source[] = (response.citations || []).map((cit, idx) => ({
-        id: `cit-${idx}`,
-        title: cit.filename,
-        snippet:
-          cit.page != null ? `Page: ${cit.page}` : 'Page: —',
-        confidenceScore: 0.95,
-      }));
-
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response.answer,
-        timestamp: new Date(),
-        isStreaming: false,
-        sources,
-        metadata: {
-          latencyMs,
-          model: currentModel,
-        }
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
       fetchStats();
 
     } catch (error: unknown) {
@@ -247,7 +314,7 @@ export function useChatStream() {
     } finally {
       setIsGenerating(false);
     }
-  }, [currentModel, conversationId, fetchConversations, toast]);
+  }, [currentModel, conversationId, fetchConversations, toast, isGenerating]);
 
   return {
     messages,

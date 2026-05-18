@@ -453,6 +453,57 @@ def generate(provider: str, model: str, prompt: str) -> str:
     raise ValueError("provider must be 'ollama' or 'openai'")
 
 
+def generate_stream(provider: str, model: str, prompt: str):
+    provider = provider.lower().strip()
+
+    if provider == "ollama":
+        import ollama
+        import os
+
+        try:
+            client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"), timeout=60.0)
+            resp = client.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.2},
+                stream=True,
+            )
+            for chunk in resp:
+                if "message" in chunk and "content" in chunk["message"]:
+                    yield chunk["message"]["content"]
+        except OllamaServiceError:
+            raise
+        except Exception as exc:
+            mapped = _map_ollama_http_error(exc)
+            if mapped is not None:
+                logger.warning("Ollama request failed: %s", exc, exc_info=True)
+                raise mapped from exc
+            if _should_treat_as_ollama_unreachable(exc):
+                logger.warning("Ollama unreachable or timed out: %s", exc, exc_info=True)
+                raise OllamaServiceError(_OLLAMA_UNAVAILABLE_MSG, cause=exc) from exc
+            logger.exception("Unexpected error from Ollama")
+            raise
+        return
+
+    if provider == "openai":
+        from openai import OpenAI
+
+        client = OpenAI(timeout=60.0)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            stream=True,
+        )
+        for chunk in resp:
+            content = chunk.choices[0].delta.content
+            if content is not None:
+                yield content
+        return
+
+    raise ValueError("provider must be 'ollama' or 'openai'")
+
+
 def extract_citations(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     out = []
@@ -498,3 +549,42 @@ def answer_question(
     answer = generate(provider=provider, model=model, prompt=prompt)
     citations = extract_citations(contexts)
     return answer, citations, contexts
+
+
+def answer_question_stream(
+    query: str,
+    provider: str = "ollama",
+    model: str = "llama3:latest",
+    top_k: int = 6,
+    only_filename: Optional[str] = None,
+    history: Optional[List[Dict[str, Any]]] = None,
+    qdrant_url: str = "http://localhost:6333",
+    hybrid: bool = True,
+    vector_weight: float = 0.6,
+    bm25_weight: float = 0.4,
+) -> Tuple[Any, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if hybrid:
+        contexts = hybrid_retrieve(
+            query=query,
+            top_k=top_k,
+            only_filename=only_filename,
+            qdrant_url=qdrant_url,
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+        )
+    else:
+        contexts = retrieve(
+            query=query,
+            top_k=top_k,
+            only_filename=only_filename,
+            qdrant_url=qdrant_url,
+        )
+
+    prompt = build_prompt(query, contexts, history=history)
+    citations = extract_citations(contexts)
+
+    def token_generator():
+        for chunk in generate_stream(provider=provider, model=model, prompt=prompt):
+            yield chunk
+
+    return token_generator(), citations, contexts

@@ -8,9 +8,10 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.requests import Request
 from pydantic import BaseModel, Field, field_validator
+import json
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
 from app.core.pdf_validation import validate_pdf_path, validate_pdf_upload
@@ -25,7 +26,7 @@ from app.db.history import (
 )
 from app.logging_config import setup_logging
 from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
-from app.rag.pipeline import answer_question
+from app.rag.pipeline import answer_question_stream
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -277,7 +278,7 @@ def remove_conversation(conversation_id: str):
     return {"message": "deleted", "conversation_id": conversation_id}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 def chat(req: ChatRequest):
     preview = req.query[:200] + ("…" if len(req.query) > 200 else "")
     logger.info(
@@ -310,49 +311,62 @@ def chat(req: ChatRequest):
     if is_new_conversation:
         update_conversation_title(conv_int, _title_from_query(req.query))
 
-    # Run RAG with history
-    try:
-        answer, citations, contexts = answer_question(
-            query=req.query,
-            provider=req.provider,
-            model=req.model,
-            top_k=req.top_k,
-            only_filename=req.only_filename,
-            history=history,
-            hybrid=req.hybrid,
-            vector_weight=req.vector_weight,
-            bm25_weight=req.bm25_weight,
-        )
-    except OllamaServiceError as exc:
-        logger.warning("chat failed: Ollama unavailable — %s", exc)
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except RetrievalServiceError as exc:
-        logger.warning("chat failed: retrieval unavailable — %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=str(exc),
-        ) from exc
+    def event_stream():
+        try:
+            generator, citations, contexts = answer_question_stream(
+                query=req.query,
+                provider=req.provider,
+                model=req.model,
+                top_k=req.top_k,
+                only_filename=req.only_filename,
+                history=history,
+                hybrid=req.hybrid,
+                vector_weight=req.vector_weight,
+                bm25_weight=req.bm25_weight,
+            )
+        except OllamaServiceError as exc:
+            logger.warning("chat failed: Ollama unavailable — %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+            return
+        except RetrievalServiceError as exc:
+            logger.warning("chat failed: retrieval unavailable — %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+            return
 
-    # Save assistant response
-    add_message(conv_int, "assistant", answer)
+        citation_models = [Citation(**c) for c in citations]
+        chunk_models = _raw_contexts_to_chunks(contexts) if req.debug else []
 
-    citation_models = [Citation(**c) for c in citations]
-    chunk_models = _raw_contexts_to_chunks(contexts) if req.debug else []
+        # Yield metadata first
+        meta_data = {
+            "type": "meta",
+            "conversation_id": conversation_id,
+            "citations": [c.model_dump() for c in citation_models],
+            "contexts": [c.model_dump() for c in chunk_models]
+        }
+        yield f"data: {json.dumps(meta_data)}\n\n"
 
-    logger.info(
-        "chat completed conversation_id=%s citations=%s contexts_logged=%s answer_len=%s",
-        conversation_id,
-        len(citation_models),
-        len(chunk_models),
-        len(answer),
-    )
+        full_answer = []
+        try:
+            for token in generator:
+                full_answer.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+        except Exception as exc:
+            logger.exception("Error during token generation")
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Error generating response'})}\n\n"
+        finally:
+            answer_text = "".join(full_answer)
+            add_message(conv_int, "assistant", answer_text)
+            
+            logger.info(
+                "chat completed conversation_id=%s citations=%s contexts_logged=%s answer_len=%s",
+                conversation_id,
+                len(citation_models),
+                len(chunk_models),
+                len(answer_text),
+            )
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    return ChatResponse(
-        answer=answer,
-        citations=citation_models,
-        contexts=chunk_models,
-        conversation_id=conversation_id,
-    )
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/documents/upload", response_model=DocumentUploadResponse)
