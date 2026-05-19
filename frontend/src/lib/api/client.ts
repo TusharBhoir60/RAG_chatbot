@@ -1,16 +1,28 @@
 import { ApiError, formatApiDetail } from '@/lib/api/errors';
+import { getSession } from 'next-auth/react';
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 
 export class ApiClient {
+  static async getAuthHeaders(): Promise<HeadersInit> {
+    const session = await getSession();
+    if (session?.user?.id) {
+      return { Authorization: `Bearer ${session.user.id}` }; // Using user ID directly as a simple multi-tenant token for this example
+    }
+    return {};
+  }
+
   static async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${API_BASE_URL}${endpoint}`;
+    
+    const authHeaders = await this.getAuthHeaders();
 
     const headers: HeadersInit = {
+      ...authHeaders,
       ...options.headers,
     };
 

@@ -19,6 +19,7 @@ def init_db():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS conversations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT DEFAULT 'anonymous',
         title TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -28,12 +29,20 @@ def init_db():
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id INTEGER NOT NULL,
+        user_id TEXT DEFAULT 'anonymous',
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(conversation_id) REFERENCES conversations(id)
     )
     """)
+
+    # Try to add user_id if migrating existing DB
+    try:
+        cur.execute("ALTER TABLE conversations ADD COLUMN user_id TEXT DEFAULT 'anonymous'")
+        cur.execute("ALTER TABLE messages ADD COLUMN user_id TEXT DEFAULT 'anonymous'")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()

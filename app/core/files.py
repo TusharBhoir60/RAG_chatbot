@@ -12,7 +12,7 @@ def ensure_pdf_dir() -> Path:
     PDF_DIR.mkdir(parents=True, exist_ok=True)
     return PDF_DIR
 
-def ingest_pdf_file(pdf_path: str, client: Optional[QdrantClient] = None) -> int:
+def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] = None) -> int:
     """
     Ingest one PDF file into Qdrant.
     Returns number of chunks inserted.
@@ -37,7 +37,7 @@ def ingest_pdf_file(pdf_path: str, client: Optional[QdrantClient] = None) -> int
 
     reader = PdfReader(pdf_path)
     points = []
-    point_id_base = abs(hash(pdf_path)) % 1_000_000_000
+    point_id_base = abs(hash(f"{pdf_path}_{user_id}")) % 1_000_000_000
     inserted = 0
 
     for page_num, page in enumerate(reader.pages, start=1):
@@ -74,6 +74,7 @@ def ingest_pdf_file(pdf_path: str, client: Optional[QdrantClient] = None) -> int
                 "page": page_num,
                 "chunk_index": idx,
                 "text": chunk,
+                "user_id": user_id,
             }
             points.append(PointStruct(id=point_id, vector=vec.tolist(), payload=payload))
             inserted += 1

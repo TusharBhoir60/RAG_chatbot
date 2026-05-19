@@ -13,30 +13,30 @@ def ensure_db():
     init_db()
 
 
-def create_conversation(title: str = "New Chat") -> int:
+def create_conversation(user_id: str, title: str = "New Chat") -> int:
     ensure_db()
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO conversations (title) VALUES (?)", (title,))
+        cur.execute("INSERT INTO conversations (user_id, title) VALUES (?, ?)", (user_id, title))
         conn.commit()
         conv_id = cur.lastrowid
         conn.close()
     except sqlite3.Error:
         logger.exception("create_conversation failed title=%r", title)
         raise
-    logger.info("db conversation created id=%s title=%r", conv_id, title)
+    logger.info("db conversation created id=%s title=%r user_id=%s", conv_id, title, user_id)
     return conv_id
 
 
-def add_message(conversation_id: int, role: str, content: str) -> int:
+def add_message(conversation_id: int, user_id: str, role: str, content: str) -> int:
     ensure_db()
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
-            (conversation_id, role, content),
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (?, ?, ?, ?)",
+            (conversation_id, user_id, role, content),
         )
         conn.commit()
         msg_id = cur.lastrowid
@@ -56,22 +56,22 @@ def add_message(conversation_id: int, role: str, content: str) -> int:
     return msg_id
 
 
-def get_messages(conversation_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+def get_messages(conversation_id: int, user_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     ensure_db()
     try:
         conn = get_conn()
         cur = conn.cursor()
         if limit is not None and limit > 0:
             cur.execute(
-                "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-                (conversation_id, limit),
+                "SELECT role, content, created_at FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY id DESC LIMIT ?",
+                (conversation_id, user_id, limit),
             )
             rows = cur.fetchall()
             rows.reverse()
         else:
             cur.execute(
-                "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-                (conversation_id,),
+                "SELECT role, content, created_at FROM messages WHERE conversation_id = ? AND user_id = ? ORDER BY id ASC",
+                (conversation_id, user_id),
             )
             rows = cur.fetchall()
         conn.close()
@@ -81,7 +81,7 @@ def get_messages(conversation_id: int, limit: Optional[int] = None) -> List[Dict
     return [dict(row) for row in rows]
 
 
-def list_conversations() -> List[Dict[str, Any]]:
+def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     ensure_db()
     try:
         conn = get_conn()
@@ -92,9 +92,11 @@ def list_conversations() -> List[Dict[str, Any]]:
                    COUNT(m.id) AS message_count
             FROM conversations c
             LEFT JOIN messages m ON m.conversation_id = c.id
+            WHERE c.user_id = ?
             GROUP BY c.id
             ORDER BY c.id DESC
-            """
+            """,
+            (user_id,)
         )
         rows = cur.fetchall()
         conn.close()
@@ -104,21 +106,21 @@ def list_conversations() -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def update_conversation_title(conversation_id: int, title: str) -> bool:
+def update_conversation_title(conversation_id: int, user_id: str, title: str) -> bool:
     ensure_db()
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "UPDATE conversations SET title = ? WHERE id = ?",
-            (title, conversation_id),
+            "UPDATE conversations SET title = ? WHERE id = ? AND user_id = ?",
+            (title, conversation_id, user_id),
         )
         updated = cur.rowcount > 0
         conn.commit()
         conn.close()
     except sqlite3.Error:
         logger.exception(
-            "update_conversation_title failed conversation_id=%s", conversation_id
+            "update_conversation_title failed conversation_id=%s user_id=%s", conversation_id, user_id
         )
         raise
     if updated:
@@ -130,20 +132,25 @@ def update_conversation_title(conversation_id: int, title: str) -> bool:
     return updated
 
 
-def delete_conversation(conversation_id: int) -> bool:
+def delete_conversation(conversation_id: int, user_id: str) -> bool:
     ensure_db()
     try:
         conn = get_conn()
         cur = conn.cursor()
+        
+        # Verify ownership before deleting messages
+        cur.execute("SELECT id FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id))
+        if not cur.fetchone():
+            return False
 
         cur.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
-        cur.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        cur.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id))
 
         deleted = cur.rowcount > 0
         conn.commit()
         conn.close()
     except sqlite3.Error:
-        logger.exception("delete_conversation failed conversation_id=%s", conversation_id)
+        logger.exception("delete_conversation failed conversation_id=%s user_id=%s", conversation_id, user_id)
         raise
     if deleted:
         logger.info("db conversation deleted id=%s", conversation_id)

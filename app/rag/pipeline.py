@@ -131,25 +131,29 @@ def tokenize(text: str) -> List[str]:
 
 def retrieve(
     query: str,
+    user_id: str,
     top_k: int = 6,
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
     try:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
         client = QdrantClient(url=qdrant_url, timeout=10.0)
         embedder = get_embedder()
 
         qvec = embed_texts(embedder, [query])[0].tolist()
+        
+        # Enforce multi-tenant isolation via Qdrant filter
+        must_conditions = [
+            FieldCondition(key="user_id", match=MatchValue(value=user_id))
+        ]
 
-        qdrant_filter = None
         if only_filename:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-            qdrant_filter = Filter(
-                must=[
-                    FieldCondition(key="filename", match=MatchValue(value=only_filename))
-                ]
+            must_conditions.append(
+                FieldCondition(key="filename", match=MatchValue(value=only_filename))
             )
+            
+        qdrant_filter = Filter(must=must_conditions)
 
         hits = client.query_points(
             collection_name=COLLECTION,
@@ -218,6 +222,7 @@ def scroll_all_payloads(
                         "page": payload.get("page", None),
                         "chunk_index": payload.get("chunk_index", None),
                         "text": payload.get("text", ""),
+                        "user_id": payload.get("user_id", "anonymous"),
                     }
                 )
             if offset is None:
@@ -256,6 +261,7 @@ def build_bm25_cache(qdrant_url: str = "http://localhost:6333"):
 
 def bm25_search(
     query: str,
+    user_id: str,
     top_k: int = 6,
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
@@ -274,6 +280,8 @@ def bm25_search(
         scored_corpus = []
         for idx, score in enumerate(scores):
             c = _CACHED_CORPUS[idx]
+            if c.get("user_id") != user_id:
+                continue
             if only_filename and c["filename"] != only_filename:
                 continue
             if score > 0:
@@ -316,6 +324,7 @@ def normalize_score_map(score_map: Dict[str, float]) -> Dict[str, float]:
 
 def hybrid_retrieve(
     query: str,
+    user_id: str,
     top_k: int = 6,
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
@@ -324,12 +333,14 @@ def hybrid_retrieve(
 ) -> List[Dict[str, Any]]:
     vec_hits = retrieve(
         query=query,
+        user_id=user_id,
         top_k=top_k,
         only_filename=only_filename,
         qdrant_url=qdrant_url,
     )
     bm25_hits = bm25_search(
         query=query,
+        user_id=user_id,
         top_k=top_k,
         only_filename=only_filename,
         qdrant_url=qdrant_url,
@@ -553,6 +564,7 @@ def answer_question(
 
 def answer_question_stream(
     query: str,
+    user_id: str,
     provider: str = "ollama",
     model: str = "llama3:latest",
     top_k: int = 6,
@@ -566,6 +578,7 @@ def answer_question_stream(
     if hybrid:
         contexts = hybrid_retrieve(
             query=query,
+            user_id=user_id,
             top_k=top_k,
             only_filename=only_filename,
             qdrant_url=qdrant_url,
@@ -575,6 +588,7 @@ def answer_question_stream(
     else:
         contexts = retrieve(
             query=query,
+            user_id=user_id,
             top_k=top_k,
             only_filename=only_filename,
             qdrant_url=qdrant_url,
