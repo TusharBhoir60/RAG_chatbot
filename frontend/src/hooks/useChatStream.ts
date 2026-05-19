@@ -181,10 +181,12 @@ export function useChatStream() {
       }
 
       const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+      const authHeaders = await ApiClient.getAuthHeaders();
       const response = await fetch(`${backendUrl}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(authHeaders as Record<string, string>),
         },
         body: JSON.stringify(payload),
         signal,

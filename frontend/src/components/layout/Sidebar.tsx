@@ -1,9 +1,10 @@
 'use client';
 
-import { MessageSquare, Database, Plus, Trash2, Loader2, X } from 'lucide-react';
+import { MessageSquare, Database, Plus, Trash2, Loader2, X, LogOut } from 'lucide-react';
 import { Conversation, Stats } from '@/types/rag';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useSession, signOut } from 'next-auth/react';
 
 interface SidebarProps {
   onNewThread?: () => void;
@@ -114,7 +115,7 @@ export function Sidebar({
       </div>
 
       {/* API Usage / Storage Quota Dashboard */}
-      <div className="p-4 border-t border-white/5">
+      <div className="p-4 border-t border-white/5 space-y-4">
         <div className="rounded-xl bg-zinc-900/50 border border-white/5 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-zinc-300 mb-3">
             <Database className="w-4 h-4 text-indigo-400" />
@@ -150,6 +151,20 @@ export function Sidebar({
               </div>
             </div>
           </div>
+        </div>
+
+        {/* User / Sign Out */}
+        <div className="flex items-center justify-between rounded-xl bg-zinc-900/50 border border-white/5 p-3">
+          <div className="flex items-center gap-2 text-sm text-zinc-300 truncate">
+            <span className="truncate">Active User</span>
+          </div>
+          <button 
+            onClick={() => signOut()}
+            className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+            title="Sign Out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </aside>

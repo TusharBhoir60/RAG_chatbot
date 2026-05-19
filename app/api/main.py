@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
 from starlette.requests import Request
 from pydantic import BaseModel, Field, field_validator
 import json
@@ -50,6 +52,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+security = HTTPBearer()
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    token = credentials.credentials
+    # In a real setup, verify JWT with pyjwt: jwt.decode(token, SECRET, algorithms=["HS256"])
+    # NextAuth passes the user.id as the Bearer token in our current setup for simplicity.
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -213,13 +228,13 @@ def health():
 
 
 @app.get("/conversations")
-def get_conversations():
-    rows = list_conversations()
-    logger.info("list_conversations count=%s", len(rows))
+def get_conversations(user_id: str = Depends(get_current_user)):
+    rows = list_conversations(user_id)
+    logger.info("list_conversations count=%s user_id=%s", len(rows), user_id)
     return {"conversations": rows}
 
 @app.get("/stats")
-def get_stats():
+def get_stats(user_id: str = Depends(get_current_user)):
     # Calculate storage used by PDFs
     pdf_dir = ensure_pdf_dir()
     total_size_bytes = sum(f.stat().st_size for f in pdf_dir.glob("*.pdf") if f.is_file())
@@ -229,7 +244,7 @@ def get_stats():
     # We'll just fetch all conversations and their messages, or a dummy for now
     # Since we can't fetch all messages easily without a new DB query, let's just 
     # estimate based on message count across all conversations.
-    conversations = list_conversations()
+    conversations = list_conversations(user_id)
     total_messages = sum(conv["message_count"] for conv in conversations)
     
     # Let's say average message is 150 tokens.
@@ -247,16 +262,16 @@ def get_stats():
     "/conversations/{conversation_id}/messages",
     response_model=ConversationMessagesResponse,
 )
-def list_messages(conversation_id: str):
+def list_messages(conversation_id: str, user_id: str = Depends(get_current_user)):
     try:
         conv_int = int(conversation_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid conversation_id") from exc
     if conv_int <= 0:
         raise HTTPException(status_code=422, detail="Invalid conversation_id")
-    rows = get_messages(conv_int)
+    rows = get_messages(conv_int, user_id)
     logger.info(
-        "list_messages conversation_id=%s message_count=%s", conv_int, len(rows)
+        "list_messages conversation_id=%s user_id=%s message_count=%s", conv_int, user_id, len(rows)
     )
     return ConversationMessagesResponse(
         conversation_id=str(conv_int),
@@ -265,21 +280,21 @@ def list_messages(conversation_id: str):
 
 
 @app.delete("/conversations/{conversation_id}")
-def remove_conversation(conversation_id: str):
+def remove_conversation(conversation_id: str, user_id: str = Depends(get_current_user)):
     try:
         cid = int(conversation_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid conversation_id") from exc
     if cid <= 0:
         raise HTTPException(status_code=422, detail="Invalid conversation_id")
-    deleted = delete_conversation(cid)
+    deleted = delete_conversation(cid, user_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="Conversation not found or unauthorized")
     return {"message": "deleted", "conversation_id": conversation_id}
 
 
 @app.post("/chat")
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
     preview = req.query[:200] + ("…" if len(req.query) > 200 else "")
     logger.info(
         "chat request conversation_id=%s provider=%s model=%s top_k=%s debug=%s "
@@ -298,18 +313,18 @@ def chat(req: ChatRequest):
         conv_int = int(req.conversation_id)
         is_new_conversation = False
     else:
-        conv_int = create_conversation("New Chat")
+        conv_int = create_conversation(user_id, "New Chat")
         is_new_conversation = True
     conversation_id = str(conv_int)
 
     # Get prior history BEFORE saving current message, limited to last 6
-    history = get_messages(conv_int, limit=6)
+    history = get_messages(conv_int, user_id, limit=6)
 
     # Save user message
-    add_message(conv_int, "user", req.query)
+    add_message(conv_int, user_id, "user", req.query)
 
     if is_new_conversation:
-        update_conversation_title(conv_int, _title_from_query(req.query))
+        update_conversation_title(conv_int, user_id, _title_from_query(req.query))
 
     def event_stream():
         try:
@@ -323,6 +338,7 @@ def chat(req: ChatRequest):
                 hybrid=req.hybrid,
                 vector_weight=req.vector_weight,
                 bm25_weight=req.bm25_weight,
+                user_id=user_id,
             )
         except OllamaServiceError as exc:
             logger.warning("chat failed: Ollama unavailable — %s", exc)
@@ -355,7 +371,7 @@ def chat(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'content': 'Error generating response'})}\n\n"
         finally:
             answer_text = "".join(full_answer)
-            add_message(conv_int, "assistant", answer_text)
+            add_message(conv_int, user_id, "assistant", answer_text)
             
             logger.info(
                 "chat completed conversation_id=%s citations=%s contexts_logged=%s answer_len=%s",
@@ -370,7 +386,7 @@ def chat(req: ChatRequest):
 
 
 @app.post("/documents/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
     filename = await validate_pdf_upload(file)
 
     pdf_dir = ensure_pdf_dir()
@@ -379,7 +395,11 @@ async def upload_document(file: UploadFile = File(...)):
     with save_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    logger.info("document uploaded filename=%s saved_to=%s", filename, save_path)
+    logger.info("document uploaded filename=%s saved_to=%s user_id=%s", filename, save_path, user_id)
+    
+    # Run ingestion sequentially for now, passing user_id
+    num_chunks = ingest_pdf_file(str(save_path), user_id=user_id, client=None)
+    logger.info("ingested %s chunks for %s", num_chunks, save_path)
 
     return DocumentUploadResponse(
         message="uploaded",
