@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Optional
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
+import re
 
 from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, embed_texts, get_embedder
 
@@ -47,21 +48,43 @@ def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] 
             continue
 
         chunks = []
-        start = 0
+        
+        # Adaptive chunking logic: split by double newlines (paragraphs)
+        paragraphs = re.split(r'\n\s*\n', text)
+        
         chunk_size = 1200
         overlap = 200
-        n = len(text)
-
-        while start < n:
-            end = min(start + chunk_size, n)
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
+        
+        current_chunk = ""
+        
+        for p in paragraphs:
+            p = p.strip()
+            if not p:
+                continue
             
-            # Use the loop fix we applied to rag.py earlier to prevent infinite looping
-            if end >= n:
-                break
-            start = max(end - overlap, start + 1)
+            if len(current_chunk) + len(p) < chunk_size:
+                current_chunk += " " + p if current_chunk else p
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                # If paragraph itself is larger than chunk size, we force split it
+                if len(p) > chunk_size:
+                    start = 0
+                    n = len(p)
+                    while start < n:
+                        end = min(start + chunk_size, n)
+                        sub_chunk = p[start:end].strip()
+                        if sub_chunk:
+                            chunks.append(sub_chunk)
+                        if end >= n:
+                            break
+                        start = max(end - overlap, start + 1)
+                    current_chunk = chunks.pop() if chunks else "" # keep last part to append
+                else:
+                    current_chunk = current_chunk[-overlap:] + " " + p if current_chunk else p
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
 
         if not chunks:
             continue

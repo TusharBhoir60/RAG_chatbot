@@ -8,7 +8,7 @@ import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
 
@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 # Must match your existing collection name
 COLLECTION = "pdf_chunks"
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 _EMBEDDER = None
+_RERANKER = None
 
 _OLLAMA_UNAVAILABLE_MSG = (
     "The language model service (Ollama) is unavailable or did not respond in time. "
@@ -118,6 +120,13 @@ def get_embedder() -> SentenceTransformer:
         logger.info("Loading embedding model %s", EMBED_MODEL_NAME)
         _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
     return _EMBEDDER
+
+def get_reranker() -> CrossEncoder:
+    global _RERANKER
+    if _RERANKER is None:
+        logger.info("Loading reranker model %s", RERANKER_MODEL_NAME)
+        _RERANKER = CrossEncoder(RERANKER_MODEL_NAME)
+    return _RERANKER
 
 
 def embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
@@ -331,17 +340,19 @@ def hybrid_retrieve(
     vector_weight: float = 0.6,
     bm25_weight: float = 0.4,
 ) -> List[Dict[str, Any]]:
+    # Retrieve more initial chunks for reranking
+    initial_top_k = top_k * 2
     vec_hits = retrieve(
         query=query,
         user_id=user_id,
-        top_k=top_k,
+        top_k=initial_top_k,
         only_filename=only_filename,
         qdrant_url=qdrant_url,
     )
     bm25_hits = bm25_search(
         query=query,
         user_id=user_id,
-        top_k=top_k,
+        top_k=initial_top_k,
         only_filename=only_filename,
         qdrant_url=qdrant_url,
     )
@@ -371,8 +382,24 @@ def hybrid_retrieve(
         c["bm25_score"] = bm25_scores.get(cid, 0.0)
         combined.append(c)
 
+    # Sort combined hits strictly by hybrid score
     combined.sort(key=lambda x: x["score"], reverse=True)
-    return combined[:top_k]
+    
+    # Reranking using CrossEncoder
+    rerank_candidates = combined[:initial_top_k]
+    
+    if rerank_candidates:
+        reranker = get_reranker()
+        cross_inp = [[query, c["text"]] for c in rerank_candidates]
+        cross_scores = reranker.predict(cross_inp)
+        
+        for c, s in zip(rerank_candidates, cross_scores):
+            c["rerank_score"] = float(s)
+            
+        # Re-sort based on reranker score
+        rerank_candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
+
+    return rerank_candidates[:top_k]
 
 
 def format_history(history: List[Dict[str, Any]]) -> str:

@@ -80,7 +80,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         content={"detail": "Internal server error"},
     )
 
-
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=100_000)
     provider: Literal["ollama", "openai"] = "ollama"
@@ -137,6 +136,7 @@ class ContextChunk(BaseModel):
     page: Optional[int] = None
     chunk_index: Optional[int] = None
     score: float
+    rerank_score: Optional[float] = None
     text: str
 
 
@@ -172,6 +172,7 @@ def _raw_contexts_to_chunks(raw: List[Dict[str, Any]]) -> List[ContextChunk]:
                 page=c.get("page"),
                 chunk_index=c.get("chunk_index"),
                 score=float(c.get("score") or 0.0),
+                rerank_score=c.get("rerank_score"),
                 text=str(c.get("text") or ""),
             )
         )
@@ -446,3 +447,4 @@ def ingest_document(filename: str):
         "filename": filename,
         "chunks_inserted": inserted,
     }
+
