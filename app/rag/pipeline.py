@@ -432,9 +432,8 @@ def build_prompt(
 RULES:
 - Use ONLY the provided context to answer.
 - If the answer is not in the context, say: "I don't know based on the provided documents."
-- Do NOT include citation brackets inside the answer text.
+- You MUST cite the source document for any retrieved info using the citation brackets provided, e.g., [filename:page].
 - Keep the answer concise and well-structured.
-- The application will attach citations separately.
 
 CONVERSATION HISTORY (most recent last):
 {history_text}

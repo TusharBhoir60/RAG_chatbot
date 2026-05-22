@@ -3,6 +3,7 @@ from typing import Optional
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 import re
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, embed_texts, get_embedder
 
@@ -47,44 +48,16 @@ def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] 
         if not text.strip():
             continue
 
-        chunks = []
-        
-        # Adaptive chunking logic: split by double newlines (paragraphs)
-        paragraphs = re.split(r'\n\s*\n', text)
-        
         chunk_size = 1200
         overlap = 200
         
-        current_chunk = ""
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            separators=["\n\n", "\n", " ", ""]
+        )
         
-        for p in paragraphs:
-            p = p.strip()
-            if not p:
-                continue
-            
-            if len(current_chunk) + len(p) < chunk_size:
-                current_chunk += " " + p if current_chunk else p
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                # If paragraph itself is larger than chunk size, we force split it
-                if len(p) > chunk_size:
-                    start = 0
-                    n = len(p)
-                    while start < n:
-                        end = min(start + chunk_size, n)
-                        sub_chunk = p[start:end].strip()
-                        if sub_chunk:
-                            chunks.append(sub_chunk)
-                        if end >= n:
-                            break
-                        start = max(end - overlap, start + 1)
-                    current_chunk = chunks.pop() if chunks else "" # keep last part to append
-                else:
-                    current_chunk = current_chunk[-overlap:] + " " + p if current_chunk else p
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
+        chunks = splitter.split_text(text)
 
         if not chunks:
             continue
