@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Optional
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
+import re
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.rag.pipeline import COLLECTION, EMBED_MODEL_NAME, embed_texts, get_embedder
 
@@ -46,22 +48,16 @@ def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] 
         if not text.strip():
             continue
 
-        chunks = []
-        start = 0
         chunk_size = 1200
         overlap = 200
-        n = len(text)
-
-        while start < n:
-            end = min(start + chunk_size, n)
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            
-            # Use the loop fix we applied to rag.py earlier to prevent infinite looping
-            if end >= n:
-                break
-            start = max(end - overlap, start + 1)
+        
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        
+        chunks = splitter.split_text(text)
 
         if not chunks:
             continue
