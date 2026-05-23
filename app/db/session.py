@@ -37,6 +37,13 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_stats (
+        user_id TEXT PRIMARY KEY,
+        queries_count INTEGER DEFAULT 0
+    )
+    """)
+
     # Try to add user_id if migrating existing DB
     try:
         cur.execute("ALTER TABLE conversations ADD COLUMN user_id TEXT DEFAULT 'anonymous'")

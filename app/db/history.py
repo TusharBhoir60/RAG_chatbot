@@ -13,6 +13,21 @@ def ensure_db():
     init_db()
 
 
+def increment_user_queries(user_id: str) -> None:
+    ensure_db()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO user_stats (user_id, queries_count) VALUES (?, 1) "
+            "ON CONFLICT(user_id) DO UPDATE SET queries_count = queries_count + 1",
+            (user_id,)
+        )
+        conn.commit()
+        conn.close()
+    except sqlite3.Error:
+        logger.exception("increment_user_queries failed user_id=%s", user_id)
+
 def create_conversation(user_id: str, title: str = "New Chat") -> int:
     ensure_db()
     try:

@@ -135,6 +135,31 @@ export function useChatStream() {
     [conversationId, toast, clearChat]
   );
 
+  const clearAllConversations = useCallback(async () => {
+    if (!confirm('Are you sure you want to delete all conversations?')) return;
+    try {
+      await ApiClient.delete('/conversations');
+      setConversations([]);
+      clearChat();
+      toast('All conversations deleted', 'success');
+    } catch (error: unknown) {
+      console.error('Failed to clear conversations:', error);
+      const msg = error instanceof ApiError ? error.message : 'Could not clear conversations.';
+      toast(msg, 'error');
+    }
+  }, [clearChat, toast]);
+
+  const renameConversation = useCallback(async (id: string, newTitle: string) => {
+    try {
+      await ApiClient.patch(`/conversations/${id}/title`, { title: newTitle });
+      setConversations((prev) => prev.map(c => String(c.id) === id ? { ...c, title: newTitle } : c));
+    } catch (error: unknown) {
+      console.error('Failed to rename conversation:', error);
+      const msg = error instanceof ApiError ? error.message : 'Could not rename conversation.';
+      toast(msg, 'error');
+    }
+  }, [toast]);
+
   const stopGeneration = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -180,7 +205,8 @@ export function useChatStream() {
         payload.conversation_id = conversationId;
       }
 
-      const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+      const backendUrl = `${baseUrl}/api/v1`;
       const authHeaders = await ApiClient.getAuthHeaders();
       const response = await fetch(`${backendUrl}/chat`, {
         method: 'POST',
@@ -332,6 +358,8 @@ export function useChatStream() {
     isLoadingConversations,
     loadConversation,
     deleteConversation,
+    clearAllConversations,
+    renameConversation,
     stats,
     fetchStats
   };
