@@ -1,6 +1,7 @@
 'use client';
 
-import { MessageSquare, Database, Plus, Trash2, Loader2, X, LogOut } from 'lucide-react';
+import { useState } from 'react';
+import { MessageSquare, Database, Plus, Trash2, Loader2, X, LogOut, Edit2, Check } from 'lucide-react';
 import { Conversation, Stats } from '@/types/rag';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,6 +14,8 @@ interface SidebarProps {
   activeConversationId?: string | null;
   onSelectConversation?: (id: string) => void;
   onDeleteConversation?: (id: string) => void;
+  onRenameConversation?: (id: string, newTitle: string) => void;
+  onClearAll?: () => void;
   isOpen?: boolean;
   onClose?: () => void;
   stats?: Stats;
@@ -25,10 +28,23 @@ export function Sidebar({
   activeConversationId,
   onSelectConversation,
   onDeleteConversation,
+  onRenameConversation,
+  onClearAll,
   isOpen = false,
   onClose,
   stats
 }: SidebarProps) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+
+  const handleRenameSubmit = (e: React.FormEvent, id: string) => {
+    e.preventDefault();
+    if (editTitle.trim() && onRenameConversation) {
+      onRenameConversation(id, editTitle.trim());
+    }
+    setEditingId(null);
+  };
+
   return (
     <>
       {/* Mobile Overlay */}
@@ -71,7 +87,18 @@ export function Sidebar({
         <div className="space-y-1">
           <div className="px-3 text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2 flex items-center justify-between">
             <span>Conversations</span>
-            {isLoadingConversations && <Loader2 className="w-3 h-3 animate-spin text-zinc-500" />}
+            <div className="flex items-center gap-2">
+              {isLoadingConversations && <Loader2 className="w-3 h-3 animate-spin text-zinc-500" />}
+              {conversations.length > 0 && onClearAll && (
+                <button
+                  onClick={onClearAll}
+                  className="text-zinc-500 hover:text-red-400 p-1 rounded"
+                  title="Clear All"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              )}
+            </div>
           </div>
           
           {conversations.length === 0 && !isLoadingConversations ? (
@@ -88,26 +115,59 @@ export function Sidebar({
                 )}
                 onClick={() => onSelectConversation?.(String(conv.id))}
               >
-                <div className="flex items-center gap-3 overflow-hidden">
-                  <MessageSquare className={cn(
-                    "w-4 h-4 flex-shrink-0", 
-                    String(activeConversationId) === String(conv.id) ? "text-indigo-400" : "text-zinc-500 group-hover:text-zinc-300"
-                  )} />
-                  <span className="truncate flex-1">
-                    {conv.title?.trim() ? conv.title : `Thread ${String(conv.id).substring(0, 8)}`}
-                  </span>
-                </div>
-                
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteConversation?.(String(conv.id));
-                  }}
-                  className="p-1.5 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-zinc-500 hover:text-red-400 rounded transition-all"
-                  title="Delete conversation"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                {editingId === String(conv.id) ? (
+                  <form 
+                    className="flex-1 flex items-center gap-2"
+                    onSubmit={(e) => handleRenameSubmit(e, String(conv.id))}
+                  >
+                    <input
+                      autoFocus
+                      className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-100 outline-none"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      onBlur={(e) => handleRenameSubmit(e, String(conv.id))}
+                    />
+                    <button type="submit" className="text-emerald-400 hover:text-emerald-300">
+                      <Check className="w-3.5 h-3.5" />
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <MessageSquare className={cn(
+                        "w-4 h-4 flex-shrink-0", 
+                        String(activeConversationId) === String(conv.id) ? "text-indigo-400" : "text-zinc-500 group-hover:text-zinc-300"
+                      )} />
+                      <span className="truncate flex-1">
+                        {conv.title?.trim() ? conv.title : `Thread ${String(conv.id).substring(0, 8)}`}
+                      </span>
+                    </div>
+                    
+                    <div className="flex opacity-0 group-hover:opacity-100 transition-all">
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingId(String(conv.id));
+                          setEditTitle(conv.title || '');
+                        }}
+                        className="p-1.5 hover:bg-indigo-500/20 text-zinc-500 hover:text-indigo-400 rounded transition-all mr-1"
+                        title="Rename conversation"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteConversation?.(String(conv.id));
+                        }}
+                        className="p-1.5 hover:bg-red-500/20 text-zinc-500 hover:text-red-400 rounded transition-all"
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             ))
           )}

@@ -6,14 +6,17 @@ import re
 import shutil
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Depends
-from starlette.requests import Request
+from fastapi import Depends, Request
 from pydantic import BaseModel, Field, field_validator
 import json
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
 from app.core.pdf_validation import validate_pdf_path, validate_pdf_upload
@@ -25,6 +28,7 @@ from app.db.history import (
     get_messages,
     list_conversations,
     update_conversation_title,
+    increment_user_queries,
 )
 from app.logging_config import setup_logging
 from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
@@ -34,6 +38,12 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RAG Bot API", version="0.5.0")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+api_router = APIRouter(prefix="/api/v1")
 
 _CONV_ID_RE = re.compile(r"^[1-9][0-9]*$")
 
@@ -224,17 +234,18 @@ async def serve_ui():
 
 
 @app.get("/health")
+@app.get("/healthz")
 def health():
     return {"status": "ok"}
 
 
-@app.get("/conversations")
+@api_router.get("/conversations")
 def get_conversations(user_id: str = Depends(get_current_user)):
     rows = list_conversations(user_id)
     logger.info("list_conversations count=%s user_id=%s", len(rows), user_id)
     return {"conversations": rows}
 
-@app.get("/stats")
+@api_router.get("/stats")
 def get_stats(user_id: str = Depends(get_current_user)):
     # Calculate storage used by PDFs
     pdf_dir = ensure_pdf_dir()
@@ -259,7 +270,7 @@ def get_stats(user_id: str = Depends(get_current_user)):
     }
 
 
-@app.get(
+@api_router.get(
     "/conversations/{conversation_id}/messages",
     response_model=ConversationMessagesResponse,
 )
@@ -280,7 +291,7 @@ def list_messages(conversation_id: str, user_id: str = Depends(get_current_user)
     )
 
 
-@app.delete("/conversations/{conversation_id}")
+@api_router.delete("/conversations/{conversation_id}")
 def remove_conversation(conversation_id: str, user_id: str = Depends(get_current_user)):
     try:
         cid = int(conversation_id)
@@ -294,8 +305,21 @@ def remove_conversation(conversation_id: str, user_id: str = Depends(get_current
     return {"message": "deleted", "conversation_id": conversation_id}
 
 
-@app.post("/chat")
-def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
+@api_router.delete("/conversations")
+def clear_all_conversations(user_id: str = Depends(get_current_user)):
+    # Helper to just loop and delete
+    conversations = list_conversations(user_id)
+    deleted_count = 0
+    for conv in conversations:
+        if delete_conversation(conv["id"], user_id):
+            deleted_count += 1
+    return {"message": "deleted_all", "deleted_count": deleted_count}
+
+
+@api_router.post("/chat")
+@limiter.limit("20/minute")
+def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_current_user)):
+    increment_user_queries(user_id)
     preview = req.query[:200] + ("…" if len(req.query) > 200 else "")
     logger.info(
         "chat request conversation_id=%s provider=%s model=%s top_k=%s debug=%s "
@@ -386,7 +410,24 @@ def chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@app.post("/documents/upload", response_model=DocumentUploadResponse)
+class TitleUpdateRequest(BaseModel):
+    title: str
+
+@api_router.patch("/conversations/{conversation_id}/title")
+def rename_conversation(conversation_id: str, req: TitleUpdateRequest, user_id: str = Depends(get_current_user)):
+    try:
+        cid = int(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid conversation_id") from exc
+    if cid <= 0:
+        raise HTTPException(status_code=422, detail="Invalid conversation_id")
+    updated = update_conversation_title(cid, user_id, req.title)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation not found or unauthorized")
+    return {"message": "updated", "conversation_id": conversation_id, "title": req.title}
+
+
+@api_router.post("/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
     filename = await validate_pdf_upload(file)
 
@@ -409,7 +450,7 @@ async def upload_document(file: UploadFile = File(...), user_id: str = Depends(g
     )
 
 
-@app.post("/documents/{filename}/ingest")
+@api_router.post("/documents/{filename}/ingest")
 def ingest_document(filename: str):
     if "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -447,4 +488,6 @@ def ingest_document(filename: str):
         "filename": filename,
         "chunks_inserted": inserted,
     }
+
+app.include_router(api_router)
 

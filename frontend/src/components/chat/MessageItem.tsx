@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import { useToast } from '@/context/ToastContext';
 
 function CodeBlock({ node, inline, className, children, ...props }: any) {
   const match = /language-(\w+)/.exec(className || '');
@@ -73,9 +74,20 @@ function renderContent(content: string) {
 
 export function MessageItem({ message }: { message: Message }) {
   const isUser = message.role === 'user';
+  const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
+
+  const handleCopyMessage = () => {
+    if (message.content) {
+      navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      toast('Message copied to clipboard', 'success');
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   return (
-    <div className={cn("py-6 w-full flex justify-center transition-colors", isUser ? "" : "bg-zinc-900/40 border-y border-white/[0.02]")}>
+    <div className={cn("py-6 w-full flex justify-center transition-colors group", isUser ? "" : "bg-zinc-900/40 border-y border-white/[0.02]")}>
       <div className="max-w-3xl w-full px-4 flex gap-6">
         <div className="flex-shrink-0 mt-1">
           {isUser ? (
@@ -115,6 +127,13 @@ export function MessageItem({ message }: { message: Message }) {
                 </span>
               )}
             </span>
+            <button
+              onClick={handleCopyMessage}
+              className="opacity-0 group-hover:opacity-100 flex items-center gap-1.5 p-1 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-all"
+              title="Copy message"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
           </div>
           
           <div className="text-[15px] tracking-wide text-zinc-200">

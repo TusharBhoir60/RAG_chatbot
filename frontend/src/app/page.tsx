@@ -32,6 +32,8 @@ export default function Home() {
           setIsSidebarOpen(false);
         }}
         onDeleteConversation={chatState.deleteConversation}
+        onRenameConversation={chatState.renameConversation}
+        onClearAll={chatState.clearAllConversations}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
         stats={chatState.stats}

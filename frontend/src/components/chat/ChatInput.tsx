@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ApiClient } from '@/lib/api/client';
 import { ApiError } from '@/lib/api/errors';
 import { useToast } from '@/context/ToastContext';
+import { useHotkeys } from 'react-hotkeys-hook';
 
 interface ChatInputProps {
   onSendMessage: (message: string) => void;
@@ -32,12 +33,34 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
 
   const inputLocked = isGenerating || isUploading;
 
+  // Restore draft from local storage
   useEffect(() => {
+    const savedDraft = localStorage.getItem('chatDraft');
+    if (savedDraft) {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      setInput(savedDraft);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save draft
+  useEffect(() => {
+    localStorage.setItem('chatDraft', input);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
   }, [input]);
+
+  useHotkeys('/', (e) => {
+    e.preventDefault();
+    textareaRef.current?.focus();
+  }, { enableOnFormTags: false });
+
+  useHotkeys('esc', () => {
+    setInput('');
+    textareaRef.current?.blur();
+  }, { enableOnFormTags: true });
 
   const handleSubmit = () => {
     if (inputLocked) {
@@ -54,7 +77,8 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Submit on Ctrl+Enter or Cmd+Enter
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSubmit();
     }
@@ -124,7 +148,18 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
   return (
     <div className="p-4 mx-auto max-w-3xl w-full relative z-20">
       <AnimatePresence>
-        {uploadSuccess && (
+        {isUploading && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium shadow-lg backdrop-blur-md"
+          >
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Uploading & Ingesting document...
+          </motion.div>
+        )}
+        {uploadSuccess && !isUploading && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
