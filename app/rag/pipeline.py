@@ -145,16 +145,19 @@ def retrieve(
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
+    if not user_id or not str(user_id).strip():
+        raise RetrievalServiceError("user_id is required for tenant-isolated retrieval")
+
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
         client = QdrantClient(url=qdrant_url, timeout=10.0)
         embedder = get_embedder()
 
         qvec = embed_texts(embedder, [query])[0].tolist()
-        
-        # Enforce multi-tenant isolation via Qdrant filter
+
+        # Strict multi-tenant isolation: every vector query MUST filter by verified user_id.
         must_conditions = [
-            FieldCondition(key="user_id", match=MatchValue(value=user_id))
+            FieldCondition(key="user_id", match=MatchValue(value=str(user_id).strip()))
         ]
 
         if only_filename:

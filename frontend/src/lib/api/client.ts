@@ -1,12 +1,12 @@
 import { API_V1_BASE } from '@/lib/api/config';
+import { getApiAccessToken } from '@/lib/api/auth';
 import { ApiError, formatApiDetail } from '@/lib/api/errors';
-import { getSession } from 'next-auth/react';
 
 export class ApiClient {
   static async getAuthHeaders(): Promise<HeadersInit> {
-    const session = await getSession();
-    if (session?.user?.id) {
-      return { Authorization: `Bearer ${session.user.id}` }; // Using user ID directly as a simple multi-tenant token for this example
+    const accessToken = await getApiAccessToken();
+    if (accessToken) {
+      return { Authorization: `Bearer ${accessToken}` };
     }
     return {};
   }

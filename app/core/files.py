@@ -19,6 +19,8 @@ def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] 
     Ingest one PDF file into Qdrant.
     Returns number of chunks inserted.
     """
+    if not user_id or not str(user_id).strip():
+        raise ValueError("user_id is required for tenant-isolated ingest")
     import os
     from pypdf import PdfReader
     from qdrant_client.models import Distance, VectorParams, PointStruct

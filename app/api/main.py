@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from fastapi import FastAPI, File, HTTPException, UploadFile, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends, Request
 from pydantic import BaseModel, Field, field_validator
 import json
@@ -35,6 +34,7 @@ from app.db.history import (
     update_conversation_title,
     increment_user_queries,
 )
+from app.auth.jwt import get_current_user, load_auth_settings
 from app.logging_config import setup_logging
 from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
 from app.rag.pipeline import answer_question_stream
@@ -48,7 +48,11 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-api_router = APIRouter(prefix="/api/v1")
+# Every /api/v1 route requires a verified JWT (see app.auth.jwt).
+api_router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(get_current_user)],
+)
 
 _CONV_ID_RE = re.compile(r"^[1-9][0-9]*$")
 
@@ -66,20 +70,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-security = HTTPBearer()
-
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    token = credentials.credentials
-    # In a real setup, verify JWT with pyjwt: jwt.decode(token, SECRET, algorithms=["HS256"])
-    # NextAuth passes the user.id as the Bearer token in our current setup for simplicity.
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return token
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -236,6 +226,7 @@ class DocumentUploadResponse(BaseModel):
 @app.on_event("startup")
 def startup():
     logger.info("application startup")
+    load_auth_settings()
     ensure_db()
 
     # Pre-load embedding model on startup
