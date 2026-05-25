@@ -1,8 +1,6 @@
+import { API_V1_BASE } from '@/lib/api/config';
 import { ApiError, formatApiDetail } from '@/lib/api/errors';
 import { getSession } from 'next-auth/react';
-
-const API_BASE_URL =
-  (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000') + '/api/v1';
 
 export class ApiClient {
   static async getAuthHeaders(): Promise<HeadersInit> {
@@ -17,7 +15,7 @@ export class ApiClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const url = `${API_BASE_URL}${endpoint}`;
+    const url = `${API_V1_BASE}${endpoint}`;
     
     const authHeaders = await this.getAuthHeaders();
 
@@ -84,5 +82,17 @@ export class ApiClient {
     options: RequestInit = {}
   ): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'DELETE' });
+  }
+
+  static async patch<T>(
+    endpoint: string,
+    data: Record<string, unknown>,
+    options: RequestInit = {}
+  ): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...options,
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
   }
 }

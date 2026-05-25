@@ -490,6 +490,30 @@ def generate(provider: str, model: str, prompt: str) -> str:
     raise ValueError("provider must be 'ollama' or 'openai'")
 
 
+def _extract_ollama_stream_content(chunk: Any) -> Optional[str]:
+    """Extract assistant text from Ollama stream chunks (dict or SDK model objects)."""
+    if chunk is None:
+        return None
+    try:
+        if isinstance(chunk, dict):
+            message = chunk.get("message")
+        else:
+            message = getattr(chunk, "message", None)
+        if message is None:
+            return None
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+        if content is None:
+            return None
+        text = str(content)
+        return text if text else None
+    except (AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Unparseable Ollama stream chunk %r: %s", chunk, exc)
+        return None
+
+
 def generate_stream(provider: str, model: str, prompt: str):
     provider = provider.lower().strip()
 
@@ -506,8 +530,9 @@ def generate_stream(provider: str, model: str, prompt: str):
                 stream=True,
             )
             for chunk in resp:
-                if "message" in chunk and "content" in chunk["message"]:
-                    yield chunk["message"]["content"]
+                content = _extract_ollama_stream_content(chunk)
+                if content:
+                    yield content
         except OllamaServiceError:
             raise
         except Exception as exc:

@@ -18,7 +18,7 @@ interface SidebarProps {
   onClearAll?: () => void;
   isOpen?: boolean;
   onClose?: () => void;
-  stats?: Stats;
+  stats?: Stats | null;
 }
 
 export function Sidebar({ 
