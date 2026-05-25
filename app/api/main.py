@@ -4,7 +4,11 @@ import logging
 import os
 import re
 import shutil
+import sys
 from typing import Any, Dict, List, Literal, Optional
+
+# Add the project root to sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
@@ -392,8 +396,13 @@ def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_current_
                 full_answer.append(token)
                 yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
         except Exception as exc:
-            logger.exception("Error during token generation")
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Error generating response'})}\n\n"
+            import app.rag.exceptions as rexc
+            if isinstance(exc, (rexc.OllamaServiceError, rexc.RetrievalServiceError)):
+                logger.warning("chat failed during generation - %s", exc)
+                yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+            else:
+                logger.exception("Error during token generation")
+                yield f"data: {json.dumps({'type': 'error', 'content': 'Error generating response'})}\n\n"
         finally:
             answer_text = "".join(full_answer)
             add_message(conv_int, user_id, "assistant", answer_text)
@@ -490,4 +499,8 @@ def ingest_document(filename: str):
     }
 
 app.include_router(api_router)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.api.main:app", host="127.0.0.1", port=8000, reload=True)
 

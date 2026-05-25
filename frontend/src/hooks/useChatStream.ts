@@ -250,61 +250,63 @@ export function useChatStream() {
               const dataStr = line.slice(6).trim();
               if (!dataStr) continue;
 
+              let data: any;
               try {
-                const data = JSON.parse(dataStr);
-                
-                if (data.type === 'meta') {
-                  const latencyMs = Date.now() - startTime;
-                  const sources: Source[] = (data.citations || []).map((cit: any, idx: number) => ({
-                    id: `cit-${idx}`,
-                    title: cit.filename,
-                    snippet: cit.page != null ? `Page: ${cit.page}` : 'Page: —',
-                    confidenceScore: 0.95,
-                  }));
-
-                  if (data.conversation_id) {
-                    setConversationId(data.conversation_id);
-                    if (isNewConversation) {
-                      fetchConversations();
-                    }
-                  }
-
-                  const assistantMessage: Message = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: '',
-                    timestamp: new Date(),
-                    isStreaming: true,
-                    sources,
-                    metadata: {
-                      latencyMs,
-                      model: currentModel,
-                    }
-                  };
-                  
-                  setMessages(prev => [...prev, assistantMessage]);
-                } else if (data.type === 'token') {
-                  streamedAnswer += data.content;
-                  setMessages(prev => 
-                    prev.map(msg => 
-                      msg.id === assistantMessageId 
-                        ? { ...msg, content: streamedAnswer } 
-                        : msg
-                    )
-                  );
-                } else if (data.type === 'done') {
-                  setMessages(prev => 
-                    prev.map(msg => 
-                      msg.id === assistantMessageId 
-                        ? { ...msg, isStreaming: false } 
-                        : msg
-                    )
-                  );
-                } else if (data.type === 'error') {
-                  throw new Error(data.content);
-                }
+                data = JSON.parse(dataStr);
               } catch (e) {
-                console.error("Error parsing SSE data line", line, e);
+                console.error("Error parsing SSE data line JSON", line, e);
+                continue;
+              }
+
+              if (data.type === 'meta') {
+                const latencyMs = Date.now() - startTime;
+                const sources: Source[] = (data.citations || []).map((cit: any, idx: number) => ({
+                  id: `cit-${idx}`,
+                  title: cit.filename,
+                  snippet: cit.page != null ? `Page: ${cit.page}` : 'Page: —',
+                  confidenceScore: 0.95,
+                }));
+
+                if (data.conversation_id) {
+                  setConversationId(data.conversation_id);
+                  if (isNewConversation) {
+                    fetchConversations();
+                  }
+                }
+
+                const assistantMessage: Message = {
+                  id: assistantMessageId,
+                  role: 'assistant',
+                  content: '',
+                  timestamp: new Date(),
+                  isStreaming: true,
+                  sources,
+                  metadata: {
+                    latencyMs,
+                    model: currentModel,
+                  }
+                };
+                
+                setMessages(prev => [...prev, assistantMessage]);
+              } else if (data.type === 'token') {
+                streamedAnswer += data.content;
+                setMessages(prev => 
+                  prev.map(msg => 
+                    msg.id === assistantMessageId 
+                      ? { ...msg, content: streamedAnswer } 
+                      : msg
+                  )
+                );
+              } else if (data.type === 'done') {
+                setMessages(prev => 
+                  prev.map(msg => 
+                    msg.id === assistantMessageId 
+                      ? { ...msg, isStreaming: false } 
+                      : msg
+                  )
+                );
+              } else if (data.type === 'error') {
+                throw new Error(data.content);
               }
             }
           }
