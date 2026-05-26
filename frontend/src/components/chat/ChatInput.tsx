@@ -90,7 +90,7 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
 
     // Validation
     const MAX_SIZE = 10 * 1024 * 1024; // 10MB
-    const ALLOWED_TYPES = ['application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+    const ALLOWED_TYPES = ['application/pdf'];
     
     if (file.size > MAX_SIZE) {
       toast('File is too large. Max size is 10MB.', 'error');
@@ -98,8 +98,8 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
       return;
     }
     
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      toast('Unsupported file type. Please upload PDF, TXT, or DOCX.', 'error');
+    if (!ALLOWED_TYPES.includes(file.type) && !file.name.toLowerCase().endsWith('.pdf')) {
+      toast('Unsupported file type. Please upload PDF only.', 'error');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }

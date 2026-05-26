@@ -71,6 +71,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    if isinstance(exc.detail, dict):
+        payload = exc.detail
+        if "detail" not in payload:
+            payload["detail"] = str(exc.detail)
+        return JSONResponse(status_code=exc.status_code, content=payload)
+    return JSONResponse(
+        status_code=exc.status_code, 
+        content={"detail": exc.detail}
+    )
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Log unexpected errors; avoid leaking internals in the response body."""
@@ -472,19 +486,38 @@ def rename_conversation(conversation_id: str, req: TitleUpdateRequest, user_id: 
     return {"message": "updated", "conversation_id": conversation_id, "title": req.title}
 
 
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", 10))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 @api_router.post("/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...), user_id: str = Depends(get_current_user)
 ):
     filename = await validate_pdf_upload(file)
-    contents = await file.read()
+    
+    contents = bytearray()
+    while True:
+        chunk = await file.read(1024 * 64)
+        if not chunk:
+            break
+        contents.extend(chunk)
+        if len(contents) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "detail": f"File too large. Maximum size is {MAX_UPLOAD_MB}MB.",
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "hint": "Try uploading a smaller file."
+                }
+            )
+    contents_bytes = bytes(contents)
 
     pdf_dir = ensure_pdf_dir()
     save_path = pdf_dir / filename
 
     try:
         num_chunks = await run_in_threadpool(
-            _persist_and_ingest_pdf, contents, save_path, user_id
+            _persist_and_ingest_pdf, contents_bytes, save_path, user_id
         )
     except Exception as exc:
         logger.exception(

@@ -1,5 +1,5 @@
 import { API_V1_BASE } from '@/lib/api/config';
-import { getApiAccessToken } from '@/lib/api/auth';
+import { getApiAccessToken, clearApiAccessToken } from '@/lib/api/auth';
 import { ApiError, formatApiDetail } from '@/lib/api/errors';
 
 export class ApiClient {
@@ -13,7 +13,8 @@ export class ApiClient {
 
   static async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    isRetry = false
   ): Promise<T> {
     const url = `${API_V1_BASE}${endpoint}`;
     
@@ -32,7 +33,27 @@ export class ApiClient {
       headerRecord['Content-Type'] = 'application/json';
     }
 
-    const response = await fetch(url, { ...options, headers });
+    let response = await fetch(url, { ...options, headers });
+
+    // Handle 401 with retry logic
+    if (response.status === 401 && !isRetry) {
+      clearApiAccessToken();
+      // Wait for a fresh token
+      await getApiAccessToken();
+      // Retry once
+      return this.request<T>(endpoint, options, true);
+    }
+
+    if (response.status === 401 && isRetry) {
+      // Global fail graceful fallback
+      clearApiAccessToken();
+      if (typeof window !== 'undefined') {
+        const errorMsg = 'Session expired. Please log in again.';
+        // use custom event so AppProviders or anywhere can pick it up for toast
+        window.dispatchEvent(new CustomEvent('auth-expired', { detail: errorMsg }));
+      }
+      throw new ApiError(response.status, 'Session expired.');
+    }
 
     if (!response.ok) {
       let detail: unknown;
