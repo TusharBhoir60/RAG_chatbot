@@ -1,15 +1,16 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useToast } from '@/context/ToastContext';
 import { ApiClient } from '@/lib/api/client';
-import { ApiError, isAbortError } from '@/lib/api/errors';
-import { Message, Source, Conversation } from '@/types/rag';
-
-interface ChatResponse {
-  answer: string;
-  citations: Array<{ filename: string; page: number | null }>;
-  contexts: unknown[];
-  conversation_id: string;
-}
+import { ApiError, formatApiDetail, isAbortError } from '@/lib/api/errors';
+import { API_V1_BASE } from '@/lib/api/config';
+import { parseSseDataLine } from '@/lib/api/sse';
+import {
+  CHAT_MODELS,
+  Message,
+  Source,
+  Conversation,
+  Stats,
+} from '@/types/rag';
 
 interface BackendMessage {
   role: 'user' | 'assistant';
@@ -22,7 +23,7 @@ export function useChatStream() {
   const { toast } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [currentModel, setCurrentModel] = useState('llama3');
+  const [currentModel, setCurrentModel] = useState(CHAT_MODELS[0].value);
   const [conversationId, setConversationId] = useState<string | null>(null);
   
   // State for the sidebar
@@ -183,15 +184,40 @@ export function useChatStream() {
       content,
       timestamp: new Date(),
     };
-    
-    setMessages(prev => [...prev, userMessage]);
+
+    const assistantMessageId = (Date.now() + 1).toString();
+    let assistantPlaced = false;
+
+    const setAssistantError = (text: string) => {
+      setMessages((prev) => {
+        if (assistantPlaced) {
+          return prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: text, isStreaming: false }
+              : msg
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: assistantMessageId,
+            role: 'assistant' as const,
+            content: text,
+            timestamp: new Date(),
+            isStreaming: false,
+          },
+        ];
+      });
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
     setIsGenerating(true);
-    
+
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
     const startTime = Date.now();
-    
-    let isNewConversation = !conversationId;
+
+    const isNewConversation = !conversationId;
 
     try {
       const payload: Record<string, unknown> = {
@@ -205,10 +231,8 @@ export function useChatStream() {
         payload.conversation_id = conversationId;
       }
 
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
-      const backendUrl = `${baseUrl}/api/v1`;
       const authHeaders = await ApiClient.getAuthHeaders();
-      const response = await fetch(`${backendUrl}/chat`, {
+      const response = await fetch(`${API_V1_BASE}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -219,62 +243,63 @@ export function useChatStream() {
       });
 
       if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Server returned ${response.status}: ${errText}`);
+        let detail = response.statusText;
+        try {
+          const errJson: unknown = await response.json();
+          if (
+            errJson !== null &&
+            typeof errJson === 'object' &&
+            'detail' in errJson
+          ) {
+            detail = formatApiDetail((errJson as { detail: unknown }).detail);
+          }
+        } catch {
+          detail = (await response.text()) || detail;
+        }
+        throw new ApiError(response.status, detail);
       }
 
       if (!response.body) {
-        throw new Error("No response body returned for streaming.");
+        throw new Error('No response body returned for streaming.');
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let done = false;
-      let streamedAnswer = "";
-      let buffer = "";
-      
-      const assistantMessageId = (Date.now() + 1).toString();
+      let buffer = '';
+      let streamedAnswer = '';
 
-      while (!done) {
+      while (true) {
         const { value, done: readerDone } = await reader.read();
-        done = readerDone;
         if (value) {
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
-          // Pop the last element because it might be an incomplete line.
-          // It will be processed in the next chunk, or when the stream is done.
-          buffer = lines.pop() || "";
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const dataStr = line.slice(6).trim();
-              if (!dataStr) continue;
+          buffer = lines.pop() ?? '';
 
-              let data: any;
-              try {
-                data = JSON.parse(dataStr);
-              } catch (e) {
-                console.error("Error parsing SSE data line JSON", line, e);
-                continue;
+          for (const line of lines) {
+            const event = parseSseDataLine(line);
+            if (!event) continue;
+
+            if (event.type === 'meta') {
+              const latencyMs = Date.now() - startTime;
+              const sources: Source[] = event.citations.map((cit, idx) => ({
+                id: `cit-${idx}`,
+                title: cit.filename,
+                snippet:
+                  cit.page != null ? `Page: ${cit.page}` : 'Page: —',
+                confidenceScore: 0.95,
+              }));
+
+              if (event.conversation_id) {
+                setConversationId(event.conversation_id);
+                if (isNewConversation) {
+                  fetchConversations();
+                }
               }
 
-              if (data.type === 'meta') {
-                const latencyMs = Date.now() - startTime;
-                const sources: Source[] = (data.citations || []).map((cit: any, idx: number) => ({
-                  id: `cit-${idx}`,
-                  title: cit.filename,
-                  snippet: cit.page != null ? `Page: ${cit.page}` : 'Page: —',
-                  confidenceScore: 0.95,
-                }));
-
-                if (data.conversation_id) {
-                  setConversationId(data.conversation_id);
-                  if (isNewConversation) {
-                    fetchConversations();
-                  }
-                }
-
-                const assistantMessage: Message = {
+              assistantPlaced = true;
+              setMessages((prev) => [
+                ...prev,
+                {
                   id: assistantMessageId,
                   role: 'assistant',
                   content: '',
@@ -284,40 +309,48 @@ export function useChatStream() {
                   metadata: {
                     latencyMs,
                     model: currentModel,
-                  }
-                };
-                
-                setMessages(prev => [...prev, assistantMessage]);
-              } else if (data.type === 'token') {
-                streamedAnswer += data.content;
-                setMessages(prev => 
-                  prev.map(msg => 
-                    msg.id === assistantMessageId 
-                      ? { ...msg, content: streamedAnswer } 
-                      : msg
-                  )
-                );
-              } else if (data.type === 'done') {
-                setMessages(prev => 
-                  prev.map(msg => 
-                    msg.id === assistantMessageId 
-                      ? { ...msg, isStreaming: false } 
-                      : msg
-                  )
-                );
-              } else if (data.type === 'error') {
-                throw new Error(data.content);
-              }
+                  },
+                },
+              ]);
+            } else if (event.type === 'token') {
+              streamedAnswer += event.content;
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, content: streamedAnswer }
+                    : msg
+                )
+              );
+            } else if (event.type === 'done') {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessageId
+                    ? { ...msg, isStreaming: false }
+                    : msg
+                )
+              );
+            } else if (event.type === 'error') {
+              throw new Error(event.content);
             }
           }
         }
+        if (readerDone) break;
       }
 
       fetchStats();
-
     } catch (error: unknown) {
       if (isAbortError(error)) {
-        // Aborted
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? {
+                  ...msg,
+                  isStreaming: false,
+                  content: msg.content || 'Stopped.',
+                }
+              : msg
+          )
+        );
       } else {
         console.error('Chat API Error:', error);
         let toastMessage = 'Chat request failed. Check the API and Ollama.';
@@ -330,21 +363,14 @@ export function useChatStream() {
           toastMessage = error.message;
         }
         toast(toastMessage, 'error');
-        setMessages(prev => [
-          ...prev, 
-          {
-            id: (Date.now() + 1).toString(),
-            role: 'assistant',
-            content: 'Something went wrong while getting a reply. See the alert below or try again.',
-            timestamp: new Date(),
-            isStreaming: false,
-          }
-        ]);
+        setAssistantError(
+          'Something went wrong while getting a reply. See the alert below or try again.'
+        );
       }
     } finally {
       setIsGenerating(false);
     }
-  }, [currentModel, conversationId, fetchConversations, toast, isGenerating]);
+  }, [currentModel, conversationId, fetchConversations, fetchStats, toast]);
 
   return {
     messages,

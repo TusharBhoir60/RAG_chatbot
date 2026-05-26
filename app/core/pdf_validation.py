@@ -26,7 +26,7 @@ def _normalize_mime(content_type: str | None) -> str:
 def _safe_filename(name: str) -> str:
     base = os.path.basename(name)
     if not base or base in (".", ".."):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+        raise HTTPException(status_code=400, detail={"detail": "Invalid filename", "code": "INVALID_FILENAME"})
     return base
 
 
@@ -36,21 +36,30 @@ async def validate_pdf_upload(file: UploadFile) -> str:
     Returns a basename-safe filename for storage.
     """
     if not file.filename:
-        raise HTTPException(status_code=400, detail="A file name is required")
+        raise HTTPException(
+            status_code=400, 
+            detail={"detail": "A file name is required", "code": "MISSING_FILENAME"}
+        )
 
     filename = _safe_filename(file.filename)
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are supported (.pdf extension required)",
+            detail={
+                "detail": "Only PDF files are supported (.pdf extension required)",
+                "code": "INVALID_TYPE",
+                "hint": "Ensure your file ends with .pdf"
+            }
         )
 
     mime = _normalize_mime(file.content_type)
     if mime and mime not in _ALLOWED_MIME:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid Content-Type for a PDF upload: {file.content_type!r}. "
-            "Expected application/pdf.",
+            detail={
+                "detail": f"Invalid Content-Type for a PDF upload: {file.content_type!r}. Expected application/pdf.",
+                "code": "INVALID_TYPE",
+            }
         )
 
     head = await file.read(8)
@@ -58,7 +67,10 @@ async def validate_pdf_upload(file: UploadFile) -> str:
     if not head.startswith(PDF_MAGIC):
         raise HTTPException(
             status_code=400,
-            detail="File is not a valid PDF (missing %PDF header)",
+            detail={
+                "detail": "File is not a valid PDF (missing %PDF header)",
+                "code": "INVALID_TYPE",
+            }
         )
 
     return filename

@@ -6,6 +6,7 @@ import { Conversation, Stats } from '@/types/rag';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSession, signOut } from 'next-auth/react';
+import { clearApiAccessToken } from '@/lib/api/auth';
 
 interface SidebarProps {
   onNewThread?: () => void;
@@ -18,7 +19,7 @@ interface SidebarProps {
   onClearAll?: () => void;
   isOpen?: boolean;
   onClose?: () => void;
-  stats?: Stats;
+  stats?: Stats | null;
 }
 
 export function Sidebar({ 
@@ -219,7 +220,10 @@ export function Sidebar({
             <span className="truncate">Active User</span>
           </div>
           <button 
-            onClick={() => signOut()}
+            onClick={() => {
+              clearApiAccessToken();
+              signOut();
+            }}
             className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
             title="Sign Out"
           >

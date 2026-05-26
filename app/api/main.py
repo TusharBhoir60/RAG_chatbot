@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 # Add the project root to sys.path
@@ -13,17 +13,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from fastapi import FastAPI, File, HTTPException, UploadFile, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends, Request
 from pydantic import BaseModel, Field, field_validator
 import json
+from starlette.concurrency import run_in_threadpool
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.core.files import ensure_pdf_dir, ingest_pdf_file
-from app.core.pdf_validation import validate_pdf_path, validate_pdf_upload
+from app.core.pdf_validation import validate_pdf_upload
 from app.db.history import (
     add_message,
     create_conversation,
@@ -34,6 +34,7 @@ from app.db.history import (
     update_conversation_title,
     increment_user_queries,
 )
+from app.auth.jwt import get_current_user, load_auth_settings
 from app.logging_config import setup_logging
 from app.rag.exceptions import OllamaServiceError, RetrievalServiceError
 from app.rag.pipeline import answer_question_stream
@@ -47,7 +48,11 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-api_router = APIRouter(prefix="/api/v1")
+# Every /api/v1 route requires a verified JWT (see app.auth.jwt).
+api_router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(get_current_user)],
+)
 
 _CONV_ID_RE = re.compile(r"^[1-9][0-9]*$")
 
@@ -66,19 +71,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-security = HTTPBearer()
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    token = credentials.credentials
-    # In a real setup, verify JWT with pyjwt: jwt.decode(token, SECRET, algorithms=["HS256"])
-    # NextAuth passes the user.id as the Bearer token in our current setup for simplicity.
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return token
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    if isinstance(exc.detail, dict):
+        payload = exc.detail
+        if "detail" not in payload:
+            payload["detail"] = str(exc.detail)
+        return JSONResponse(status_code=exc.status_code, content=payload)
+    return JSONResponse(
+        status_code=exc.status_code, 
+        content={"detail": exc.detail}
+    )
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -147,6 +152,7 @@ class Citation(BaseModel):
 
 class ContextChunk(BaseModel):
     filename: str
+    doc_id: Optional[str] = None
     page: Optional[int] = None
     chunk_index: Optional[int] = None
     score: float
@@ -161,6 +167,26 @@ class ChatResponse(BaseModel):
     citations: List[Citation]
     contexts: List[ContextChunk]
     conversation_id: str
+
+
+def _sse_data(payload: Dict[str, Any]) -> str:
+    """SSE frame matching the frontend contract (data: JSON)."""
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _sse_error(message: str) -> str:
+    return _sse_data({"type": "error", "content": message})
+
+
+def _persist_and_ingest_pdf(contents: bytes, save_path: Path, user_id: str) -> int:
+    """Blocking save + Qdrant ingest (run via threadpool from async routes)."""
+    with save_path.open("wb") as buffer:
+        buffer.write(contents)
+    num_chunks = ingest_pdf_file(str(save_path), user_id=user_id, client=None)
+    from app.rag.pipeline import build_bm25_cache
+
+    build_bm25_cache()
+    return num_chunks
 
 
 def _title_from_query(query: str) -> str:
@@ -183,6 +209,7 @@ def _raw_contexts_to_chunks(raw: List[Dict[str, Any]]) -> List[ContextChunk]:
         out.append(
             ContextChunk(
                 filename=str(c.get("filename") or "unknown"),
+                doc_id=c.get("doc_id"),
                 page=c.get("page"),
                 chunk_index=c.get("chunk_index"),
                 score=float(c.get("score") or 0.0),
@@ -215,6 +242,7 @@ class DocumentUploadResponse(BaseModel):
 @app.on_event("startup")
 def startup():
     logger.info("application startup")
+    load_auth_settings()
     ensure_db()
 
     # Pre-load embedding model on startup
@@ -356,65 +384,89 @@ def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_current_
         update_conversation_title(conv_int, user_id, _title_from_query(req.query))
 
     def event_stream():
+        full_answer: List[str] = []
+        stream_failed = False
+        citation_models: List[Citation] = []
+        chunk_models: List[ContextChunk] = []
+
         try:
-            generator, citations, contexts = answer_question_stream(
-                query=req.query,
-                provider=req.provider,
-                model=req.model,
-                top_k=req.top_k,
-                only_filename=req.only_filename,
-                history=history,
-                hybrid=req.hybrid,
-                vector_weight=req.vector_weight,
-                bm25_weight=req.bm25_weight,
-                user_id=user_id,
-            )
-        except OllamaServiceError as exc:
-            logger.warning("chat failed: Ollama unavailable — %s", exc)
-            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
-            return
-        except RetrievalServiceError as exc:
-            logger.warning("chat failed: retrieval unavailable — %s", exc)
-            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
-            return
+            try:
+                generator, citations, contexts = answer_question_stream(
+                    query=req.query,
+                    provider=req.provider,
+                    model=req.model,
+                    top_k=req.top_k,
+                    only_filename=req.only_filename,
+                    history=history,
+                    hybrid=req.hybrid,
+                    vector_weight=req.vector_weight,
+                    bm25_weight=req.bm25_weight,
+                    user_id=user_id,
+                )
+            except OllamaServiceError as exc:
+                logger.warning("chat failed: Ollama unavailable — %s", exc)
+                stream_failed = True
+                yield _sse_error(str(exc))
+                return
+            except RetrievalServiceError as exc:
+                logger.warning("chat failed: retrieval unavailable — %s", exc)
+                stream_failed = True
+                yield _sse_error(str(exc))
+                return
 
-        citation_models = [Citation(**c) for c in citations]
-        chunk_models = _raw_contexts_to_chunks(contexts) if req.debug else []
+            citation_models = [Citation(**c) for c in citations]
+            chunk_models = _raw_contexts_to_chunks(contexts) if req.debug else []
 
-        # Yield metadata first
-        meta_data = {
-            "type": "meta",
-            "conversation_id": conversation_id,
-            "citations": [c.model_dump() for c in citation_models],
-            "contexts": [c.model_dump() for c in chunk_models]
-        }
-        yield f"data: {json.dumps(meta_data)}\n\n"
+            meta_data = {
+                "type": "meta",
+                "conversation_id": conversation_id,
+                "citations": [c.model_dump() for c in citation_models],
+                "contexts": [c.model_dump() for c in chunk_models],
+            }
+            yield _sse_data(meta_data)
 
-        full_answer = []
-        try:
-            for token in generator:
-                full_answer.append(token)
-                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-        except Exception as exc:
-            import app.rag.exceptions as rexc
-            if isinstance(exc, (rexc.OllamaServiceError, rexc.RetrievalServiceError)):
-                logger.warning("chat failed during generation - %s", exc)
-                yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
-            else:
+            try:
+                for token in generator:
+                    full_answer.append(token)
+                    yield _sse_data({"type": "token", "content": token})
+            except OllamaServiceError as exc:
+                logger.warning("chat failed during generation — %s", exc)
+                stream_failed = True
+                yield _sse_error(str(exc))
+            except RetrievalServiceError as exc:
+                logger.warning("chat failed during generation — %s", exc)
+                stream_failed = True
+                yield _sse_error(str(exc))
+            except Exception as exc:
                 logger.exception("Error during token generation")
-                yield f"data: {json.dumps({'type': 'error', 'content': 'Error generating response'})}\n\n"
+                stream_failed = True
+                yield _sse_error(f"Generation failed: {exc}")
+
+        except Exception as exc:
+            logger.exception("chat stream failed")
+            stream_failed = True
+            yield _sse_error(f"Stream failed: {exc}")
+
         finally:
             answer_text = "".join(full_answer)
-            add_message(conv_int, user_id, "assistant", answer_text)
-            
-            logger.info(
-                "chat completed conversation_id=%s citations=%s contexts_logged=%s answer_len=%s",
-                conversation_id,
-                len(citation_models),
-                len(chunk_models),
-                len(answer_text),
-            )
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            if answer_text:
+                add_message(conv_int, user_id, "assistant", answer_text)
+
+            if stream_failed:
+                logger.warning(
+                    "chat stream ended with error conversation_id=%s answer_len=%s",
+                    conversation_id,
+                    len(answer_text),
+                )
+            else:
+                logger.info(
+                    "chat completed conversation_id=%s citations=%s contexts_logged=%s answer_len=%s",
+                    conversation_id,
+                    len(citation_models),
+                    len(chunk_models),
+                    len(answer_text),
+                )
+                yield _sse_data({"type": "done"})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -436,21 +488,65 @@ def rename_conversation(conversation_id: str, req: TitleUpdateRequest, user_id: 
     return {"message": "updated", "conversation_id": conversation_id, "title": req.title}
 
 
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", 10))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 @api_router.post("/documents/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...), user_id: str = Depends(get_current_user)):
+async def upload_document(
+    file: UploadFile = File(...), user_id: str = Depends(get_current_user)
+):
     filename = await validate_pdf_upload(file)
+    
+    contents = bytearray()
+    while True:
+        chunk = await file.read(1024 * 64)
+        if not chunk:
+            break
+        contents.extend(chunk)
+        if len(contents) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "detail": f"File too large. Maximum size is {MAX_UPLOAD_MB}MB.",
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "hint": "Try uploading a smaller file."
+                }
+            )
+    contents_bytes = bytes(contents)
 
     pdf_dir = ensure_pdf_dir()
     save_path = pdf_dir / filename
 
-    with save_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        num_chunks = await run_in_threadpool(
+            _persist_and_ingest_pdf, contents_bytes, save_path, user_id
+        )
+    except Exception as exc:
+        logger.exception(
+            "document upload/ingest failed filename=%s user_id=%s",
+            filename,
+            user_id,
+        )
+        if save_path.exists():
+            try:
+                save_path.unlink()
+            except OSError:
+                logger.warning("could not remove partial upload %s", save_path)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document upload or ingest failed. Ensure Qdrant is running, "
+                "the embedding model is available, and the PDF is not corrupted."
+            ),
+        ) from exc
 
-    logger.info("document uploaded filename=%s saved_to=%s user_id=%s", filename, save_path, user_id)
-    
-    # Run ingestion sequentially for now, passing user_id
-    num_chunks = ingest_pdf_file(str(save_path), user_id=user_id, client=None)
-    logger.info("ingested %s chunks for %s", num_chunks, save_path)
+    logger.info(
+        "document uploaded and ingested filename=%s saved_to=%s user_id=%s chunks=%s",
+        filename,
+        save_path,
+        user_id,
+        num_chunks,
+    )
 
     return DocumentUploadResponse(
         message="uploaded",
@@ -458,45 +554,6 @@ async def upload_document(file: UploadFile = File(...), user_id: str = Depends(g
         saved_to=str(save_path),
     )
 
-
-@api_router.post("/documents/{filename}/ingest")
-def ingest_document(filename: str):
-    if "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-
-    pdf_dir = ensure_pdf_dir()
-    pdf_path = pdf_dir / os.path.basename(filename)
-
-    if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
-
-    validate_pdf_path(pdf_path)
-
-    try:
-        inserted = ingest_pdf_file(str(pdf_path))
-        from app.rag.pipeline import build_bm25_cache
-        build_bm25_cache()
-    except Exception as exc:
-        logger.exception("document ingest failed path=%s", pdf_path)
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Document ingest failed. Ensure Qdrant is running, the embedding "
-                "model is available, and the PDF is not corrupted."
-            ),
-        ) from exc
-
-    logger.info(
-        "document ingested filename=%s chunks_inserted=%s path=%s",
-        os.path.basename(filename),
-        inserted,
-        pdf_path,
-    )
-    return {
-        "message": "ingested",
-        "filename": filename,
-        "chunks_inserted": inserted,
-    }
 
 app.include_router(api_router)
 

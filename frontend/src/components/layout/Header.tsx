@@ -5,13 +5,7 @@ import { Zap, ChevronDown, Check, Menu } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const MODELS = [
-  "Gemini 3.1 Pro",
-  "Gemini 3.1 Flash",
-  "GPT-4o",
-  "Claude 3.5 Sonnet",
-  "Local Llama 3 8B"
-];
+import { CHAT_MODELS } from '@/types/rag';
 
 interface HeaderProps {
   currentModel: string;
@@ -64,7 +58,7 @@ export function Header({ currentModel, onModelSelect, latencyMs, onGoHome, onOpe
             onClick={() => setIsDropdownOpen(!isDropdownOpen)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-md hover:bg-white/5 border border-transparent hover:border-white/10 transition-colors text-sm text-zinc-300 font-medium"
           >
-            {currentModel}
+            {CHAT_MODELS.find((m) => m.value === currentModel)?.label ?? currentModel}
             <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform duration-200", isDropdownOpen && "rotate-180")} />
           </button>
 
@@ -77,22 +71,22 @@ export function Header({ currentModel, onModelSelect, latencyMs, onGoHome, onOpe
                 transition={{ duration: 0.15 }}
                 className="absolute right-0 mt-2 w-56 rounded-xl bg-zinc-900 border border-white/10 shadow-2xl glass-panel overflow-hidden py-1 z-50"
               >
-                {MODELS.map((model) => (
+                {CHAT_MODELS.map((model) => (
                   <button
-                    key={model}
+                    key={model.value}
                     onClick={() => {
-                      if (onModelSelect) onModelSelect(model);
+                      if (onModelSelect) onModelSelect(model.value);
                       setIsDropdownOpen(false);
                     }}
                     className={cn(
                       "w-full flex items-center justify-between px-3 py-2 text-sm text-left transition-colors",
-                      currentModel === model 
+                      currentModel === model.value
                         ? "bg-indigo-500/10 text-indigo-300" 
                         : "text-zinc-300 hover:bg-white/5 hover:text-zinc-100"
                     )}
                   >
-                    {model}
-                    {currentModel === model && <Check className="w-4 h-4" />}
+                    {model.label}
+                    {currentModel === model.value && <Check className="w-4 h-4" />}
                   </button>
                 ))}
               </motion.div>

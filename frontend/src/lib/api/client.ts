@@ -1,23 +1,22 @@
+import { API_V1_BASE } from '@/lib/api/config';
+import { getApiAccessToken, clearApiAccessToken } from '@/lib/api/auth';
 import { ApiError, formatApiDetail } from '@/lib/api/errors';
-import { getSession } from 'next-auth/react';
-
-const API_BASE_URL =
-  (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000') + '/api/v1';
 
 export class ApiClient {
   static async getAuthHeaders(): Promise<HeadersInit> {
-    const session = await getSession();
-    if (session?.user?.id) {
-      return { Authorization: `Bearer ${session.user.id}` }; // Using user ID directly as a simple multi-tenant token for this example
+    const accessToken = await getApiAccessToken();
+    if (accessToken) {
+      return { Authorization: `Bearer ${accessToken}` };
     }
     return {};
   }
 
   static async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    isRetry = false
   ): Promise<T> {
-    const url = `${API_BASE_URL}${endpoint}`;
+    const url = `${API_V1_BASE}${endpoint}`;
     
     const authHeaders = await this.getAuthHeaders();
 
@@ -34,7 +33,27 @@ export class ApiClient {
       headerRecord['Content-Type'] = 'application/json';
     }
 
-    const response = await fetch(url, { ...options, headers });
+    let response = await fetch(url, { ...options, headers });
+
+    // Handle 401 with retry logic
+    if (response.status === 401 && !isRetry) {
+      clearApiAccessToken();
+      // Wait for a fresh token
+      await getApiAccessToken();
+      // Retry once
+      return this.request<T>(endpoint, options, true);
+    }
+
+    if (response.status === 401 && isRetry) {
+      // Global fail graceful fallback
+      clearApiAccessToken();
+      if (typeof window !== 'undefined') {
+        const errorMsg = 'Session expired. Please log in again.';
+        // use custom event so AppProviders or anywhere can pick it up for toast
+        window.dispatchEvent(new CustomEvent('auth-expired', { detail: errorMsg }));
+      }
+      throw new ApiError(response.status, 'Session expired.');
+    }
 
     if (!response.ok) {
       let detail: unknown;
@@ -84,5 +103,17 @@ export class ApiClient {
     options: RequestInit = {}
   ): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'DELETE' });
+  }
+
+  static async patch<T>(
+    endpoint: string,
+    data: Record<string, unknown>,
+    options: RequestInit = {}
+  ): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...options,
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
   }
 }

@@ -90,7 +90,7 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
 
     // Validation
     const MAX_SIZE = 10 * 1024 * 1024; // 10MB
-    const ALLOWED_TYPES = ['application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+    const ALLOWED_TYPES = ['application/pdf'];
     
     if (file.size > MAX_SIZE) {
       toast('File is too large. Max size is 10MB.', 'error');
@@ -98,8 +98,8 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
       return;
     }
     
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      toast('Unsupported file type. Please upload PDF, TXT, or DOCX.', 'error');
+    if (!ALLOWED_TYPES.includes(file.type) && !file.name.toLowerCase().endsWith('.pdf')) {
+      toast('Unsupported file type. Please upload PDF only.', 'error');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -116,13 +116,7 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
         formData
       );
 
-      const encodedName = encodeURIComponent(uploadRes.filename);
-      await ApiClient.post<Record<string, unknown>>(
-        `/documents/${encodedName}/ingest`,
-        {}
-      );
-
-      const okMsg = `Ingested “${uploadRes.filename}”`;
+      const okMsg = `Uploaded and indexed “${uploadRes.filename}”`;
       setUploadSuccess(okMsg);
       toast(okMsg, 'success');
       window.setTimeout(() => setUploadSuccess(null), 5000);
@@ -131,11 +125,11 @@ export function ChatInput({ onSendMessage, isGenerating, onStop, onUploadSuccess
       if (onUploadSuccess) onUploadSuccess();
       
     } catch (error: unknown) {
-      console.error('Failed to upload and ingest:', error);
+      console.error('Failed to upload document:', error);
       const msg =
         error instanceof ApiError
           ? error.message
-          : 'Upload or ingest failed. Check the API, PDF, and Qdrant.';
+          : 'Upload failed. Check the API, PDF, and Qdrant.';
       toast(msg, 'error');
     } finally {
       setIsUploading(false);

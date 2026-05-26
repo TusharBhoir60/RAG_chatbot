@@ -145,16 +145,19 @@ def retrieve(
     only_filename: Optional[str] = None,
     qdrant_url: str = "http://localhost:6333",
 ) -> List[Dict[str, Any]]:
+    if not user_id or not str(user_id).strip():
+        raise RetrievalServiceError("user_id is required for tenant-isolated retrieval")
+
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
         client = QdrantClient(url=qdrant_url, timeout=10.0)
         embedder = get_embedder()
 
         qvec = embed_texts(embedder, [query])[0].tolist()
-        
-        # Enforce multi-tenant isolation via Qdrant filter
+
+        # Strict multi-tenant isolation: every vector query MUST filter by verified user_id.
         must_conditions = [
-            FieldCondition(key="user_id", match=MatchValue(value=user_id))
+            FieldCondition(key="user_id", match=MatchValue(value=str(user_id).strip()))
         ]
 
         if only_filename:
@@ -183,6 +186,7 @@ def retrieve(
             {
                 "id": str(h.id),
                 "filename": p.get("filename", "unknown"),
+                "doc_id": p.get("doc_id", None),
                 "page": p.get("page", None),
                 "chunk_index": p.get("chunk_index", None),
                 "text": p.get("text", ""),
@@ -228,6 +232,7 @@ def scroll_all_payloads(
                     {
                         "id": str(p.id),
                         "filename": payload.get("filename", "unknown"),
+                        "doc_id": payload.get("doc_id", None),
                         "page": payload.get("page", None),
                         "chunk_index": payload.get("chunk_index", None),
                         "text": payload.get("text", ""),
@@ -305,6 +310,7 @@ def bm25_search(
                 {
                     "id": c["id"],
                     "filename": c["filename"],
+                    "doc_id": c.get("doc_id", None),
                     "page": c["page"],
                     "chunk_index": c["chunk_index"],
                     "text": c["text"],
@@ -327,7 +333,9 @@ def normalize_score_map(score_map: Dict[str, float]) -> Dict[str, float]:
     vals = list(score_map.values())
     min_s, max_s = min(vals), max(vals)
     if max_s == min_s:
-        return {k: 1.0 for k in score_map}
+        # Avoid giving uniform high scores if everything is essentially a zero match
+        valid_val = 1.0 if max_s > 0 else 0.0
+        return {k: valid_val for k in score_map}
     return {k: (v - min_s) / (max_s - min_s) for k, v in score_map.items()}
 
 
@@ -384,9 +392,39 @@ def hybrid_retrieve(
 
     # Sort combined hits strictly by hybrid score
     combined.sort(key=lambda x: x["score"], reverse=True)
-    
+
+    # Deduplicate and apply diversity constraints
+    deduped: List[Dict[str, Any]] = []
+    seen_keys = set()
+    doc_counts = {}
+
+    import hashlib
+    for c in combined:
+        doc_key = c.get("doc_id") or c.get("filename", "unknown")
+        page = c.get("page")
+        chunk_idx = c.get("chunk_index")
+        
+        # Deduplication key based on stable IDs or content hash
+        if chunk_idx is not None:
+            stable_key = f"{doc_key}_p{page}_c{chunk_idx}"
+        else:
+            text_hash = hashlib.md5(c.get("text", "").encode()).hexdigest()[:8]
+            stable_key = f"{doc_key}_p{page}_{text_hash}"
+
+        if stable_key in seen_keys:
+            continue
+            
+        # Diversity limit (e.g., max 3 chunks per document unless only filtering by one filename)
+        max_chunks_per_doc = 3 if only_filename is None else 10
+        if doc_counts.get(doc_key, 0) >= max_chunks_per_doc:
+            continue
+            
+        seen_keys.add(stable_key)
+        doc_counts[doc_key] = doc_counts.get(doc_key, 0) + 1
+        deduped.append(c)
+
     # Reranking using CrossEncoder
-    rerank_candidates = combined[:initial_top_k]
+    rerank_candidates = deduped[:initial_top_k]
     
     if rerank_candidates:
         reranker = get_reranker()
@@ -490,6 +528,30 @@ def generate(provider: str, model: str, prompt: str) -> str:
     raise ValueError("provider must be 'ollama' or 'openai'")
 
 
+def _extract_ollama_stream_content(chunk: Any) -> Optional[str]:
+    """Extract assistant text from Ollama stream chunks (dict or SDK model objects)."""
+    if chunk is None:
+        return None
+    try:
+        if isinstance(chunk, dict):
+            message = chunk.get("message")
+        else:
+            message = getattr(chunk, "message", None)
+        if message is None:
+            return None
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+        if content is None:
+            return None
+        text = str(content)
+        return text if text else None
+    except (AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Unparseable Ollama stream chunk %r: %s", chunk, exc)
+        return None
+
+
 def generate_stream(provider: str, model: str, prompt: str):
     provider = provider.lower().strip()
 
@@ -506,8 +568,9 @@ def generate_stream(provider: str, model: str, prompt: str):
                 stream=True,
             )
             for chunk in resp:
-                if "message" in chunk and "content" in chunk["message"]:
-                    yield chunk["message"]["content"]
+                content = _extract_ollama_stream_content(chunk)
+                if content:
+                    yield content
         except OllamaServiceError:
             raise
         except Exception as exc:

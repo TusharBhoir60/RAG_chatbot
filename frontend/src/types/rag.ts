@@ -41,3 +41,43 @@ export interface Stats {
   tokens_used: number;
   tokens_total: number;
 }
+
+/** Ollama model id sent to POST /api/v1/chat */
+export interface ChatModelOption {
+  label: string;
+  value: string;
+}
+
+export const CHAT_MODELS: ChatModelOption[] = [
+  { label: 'Llama 3', value: 'llama3:latest' },
+  { label: 'Llama 3 (tag: llama3)', value: 'llama3' },
+  { label: 'Mistral', value: 'mistral:latest' },
+];
+
+export interface SseCitation {
+  filename: string;
+  page: number | null;
+}
+
+export type SseMetaEvent = {
+  type: 'meta';
+  conversation_id: string;
+  citations: SseCitation[];
+  contexts: unknown[];
+};
+
+export type SseTokenEvent = {
+  type: 'token';
+  content: string;
+};
+
+export type SseDoneEvent = {
+  type: 'done';
+};
+
+export type SseErrorEvent = {
+  type: 'error';
+  content: string;
+};
+
+export type SseEvent = SseMetaEvent | SseTokenEvent | SseDoneEvent | SseErrorEvent;

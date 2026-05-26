@@ -65,9 +65,12 @@ def ingest(pdf_dir: str):
     point_id = 1
     points = []
 
+    import uuid
     for fname in os.listdir(pdf_dir):
         if not fname.lower().endswith(".pdf"):
             continue
+        
+        doc_id = str(uuid.uuid4())
         pdf_path = os.path.join(pdf_dir, fname)
         pages = load_pdf_pages(pdf_path)
 
@@ -80,6 +83,7 @@ def ingest(pdf_dir: str):
             for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
                 payload = {
                     "filename": fname,
+                    "doc_id": doc_id,
                     "page": p["page"],
                     "chunk_index": idx,
                     "text": chunk,
