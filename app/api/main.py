@@ -152,6 +152,7 @@ class Citation(BaseModel):
 
 class ContextChunk(BaseModel):
     filename: str
+    doc_id: Optional[str] = None
     page: Optional[int] = None
     chunk_index: Optional[int] = None
     score: float
@@ -208,6 +209,7 @@ def _raw_contexts_to_chunks(raw: List[Dict[str, Any]]) -> List[ContextChunk]:
         out.append(
             ContextChunk(
                 filename=str(c.get("filename") or "unknown"),
+                doc_id=c.get("doc_id"),
                 page=c.get("page"),
                 chunk_index=c.get("chunk_index"),
                 score=float(c.get("score") or 0.0),

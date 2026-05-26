@@ -41,6 +41,8 @@ def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] 
 
     reader = PdfReader(pdf_path)
     points = []
+    import uuid
+    doc_id = str(uuid.uuid4())
     point_id_base = abs(hash(f"{pdf_path}_{user_id}")) % 1_000_000_000
     inserted = 0
 
@@ -68,11 +70,12 @@ def ingest_pdf_file(pdf_path: str, user_id: str, client: Optional[QdrantClient] 
         for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
             point_id = point_id_base + inserted + 1
             payload = {
+                "user_id": user_id,
+                "doc_id": doc_id,
                 "filename": os.path.basename(pdf_path),
                 "page": page_num,
                 "chunk_index": idx,
                 "text": chunk,
-                "user_id": user_id,
             }
             points.append(PointStruct(id=point_id, vector=vec.tolist(), payload=payload))
             inserted += 1
