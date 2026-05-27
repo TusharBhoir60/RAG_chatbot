@@ -451,18 +451,48 @@ def format_history(history: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(
-    query: str,
+import os
+import hashlib
+
+def build_context_and_sources(
     contexts: List[Dict[str, Any]],
-    history: Optional[List[Dict[str, Any]]] = None,
-) -> str:
+    max_tokens: int = int(os.getenv("MAX_CONTEXT_TOKENS", 4000)),
+) -> Tuple[str, List[Dict[str, Any]]]:
     context_blocks = []
+    used_sources = []
+    current_length = 0
+    # Approximation: 1 token ~= 4 characters
+    char_budget = max_tokens * 4
+
     for c in contexts:
         page = c.get("page", "?")
-        tag = f"[{c.get('filename','unknown')}:{page}]"
-        context_blocks.append(f"{tag}\n{c.get('text','')}")
+        filename = c.get("filename", "unknown")
+        tag = f"[{filename}:{page}]"
+        text = c.get("text", "")
+        block = f"{tag}\n{text}"
+        
+        if current_length + len(block) > char_budget:
+            break
+            
+        context_blocks.append(block)
+        current_length += len(block) + 7
+        
+        used_sources.append({
+            "doc_id": c.get("doc_id"),
+            "filename": filename,
+            "page": c.get("page"),
+            "chunk_index": c.get("chunk_index"),
+            "snippet": text[:200] + "..." if len(text) > 200 else text
+        })
 
-    context_text = "\n\n---\n\n".join(context_blocks)
+    return "\n\n---\n\n".join(context_blocks), used_sources
+
+
+def build_prompt(
+    query: str,
+    context_text: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     history_text = format_history(history or [])
 
     return f"""You are a helpful RAG assistant.
@@ -663,7 +693,7 @@ def answer_question_stream(
     hybrid: bool = True,
     vector_weight: float = 0.6,
     bm25_weight: float = 0.4,
-) -> Tuple[Any, List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[Any, List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     if hybrid:
         contexts = hybrid_retrieve(
             query=query,
@@ -683,11 +713,12 @@ def answer_question_stream(
             qdrant_url=qdrant_url,
         )
 
-    prompt = build_prompt(query, contexts, history=history)
+    context_text, used_sources = build_context_and_sources(contexts)
+    prompt = build_prompt(query, context_text, history=history)
     citations = extract_citations(contexts)
 
     def token_generator():
         for chunk in generate_stream(provider=provider, model=model, prompt=prompt):
             yield chunk
 
-    return token_generator(), citations, contexts
+    return token_generator(), citations, contexts, used_sources
