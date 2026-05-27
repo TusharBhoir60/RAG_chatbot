@@ -160,6 +160,13 @@ class ContextChunk(BaseModel):
     text: str
 
 
+class SourceChunk(BaseModel):
+    doc_id: Optional[str] = None
+    filename: str
+    page: Optional[int] = None
+    chunk_index: Optional[int] = None
+    snippet: str
+
 class ChatResponse(BaseModel):
     """Stable contract for the Next.js client (field order preserved for readability)."""
 
@@ -167,6 +174,8 @@ class ChatResponse(BaseModel):
     citations: List[Citation]
     contexts: List[ContextChunk]
     conversation_id: str
+    sources: Optional[List[SourceChunk]] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 def _sse_data(payload: Dict[str, Any]) -> str:
@@ -391,7 +400,7 @@ def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_current_
 
         try:
             try:
-                generator, citations, contexts = answer_question_stream(
+                generator, citations, contexts, used_sources = answer_question_stream(
                     query=req.query,
                     provider=req.provider,
                     model=req.model,
@@ -416,12 +425,17 @@ def chat(request: Request, req: ChatRequest, user_id: str = Depends(get_current_
 
             citation_models = [Citation(**c) for c in citations]
             chunk_models = _raw_contexts_to_chunks(contexts) if req.debug else []
+            
+            source_models = []
+            for s in used_sources:
+                 source_models.append(SourceChunk(**s))
 
             meta_data = {
                 "type": "meta",
                 "conversation_id": conversation_id,
                 "citations": [c.model_dump() for c in citation_models],
                 "contexts": [c.model_dump() for c in chunk_models],
+                "sources": [s.model_dump() for s in source_models],
             }
             yield _sse_data(meta_data)
 
