@@ -54,7 +54,7 @@ def embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
     return np.asarray(vecs, dtype=np.float32)
 
 
-def ingest(pdf_dir: str):
+def ingest(pdf_dir: str, user_id: str = "default_user"):
     client = QdrantClient(url="http://localhost:6333")
     embedder = SentenceTransformer(EMBED_MODEL_NAME)
 
@@ -82,6 +82,7 @@ def ingest(pdf_dir: str):
             vectors = embed_texts(embedder, chunks)
             for idx, (chunk, vec) in enumerate(zip(chunks, vectors)):
                 payload = {
+                    "user_id": user_id,
                     "filename": fname,
                     "doc_id": doc_id,
                     "page": p["page"],
@@ -202,6 +203,7 @@ def main():
 
     p_ingest = sub.add_parser("ingest")
     p_ingest.add_argument("--pdf_dir", default="data/pdfs")
+    p_ingest.add_argument("--user_id", default="default_user")
 
     p_ask = sub.add_parser("ask")
     p_ask.add_argument("query")
@@ -213,7 +215,7 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == "ingest":
-        ingest(args.pdf_dir)
+        ingest(args.pdf_dir, args.user_id)
     elif args.cmd == "ask":
         ask(args.query, args.provider, args.model, args.top_k, args.show_context)
 

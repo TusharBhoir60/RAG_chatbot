@@ -6,6 +6,10 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from dotenv import load_dotenv
+
+# Force loading of .env file from the backend root before components initialize
+load_dotenv(override=True)
 
 # Add the project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))

@@ -524,7 +524,7 @@ def generate(provider: str, model: str, prompt: str) -> str:
         import os
 
         try:
-            client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"), timeout=60.0)
+            client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"), timeout=600.0)
             resp = client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
@@ -547,7 +547,7 @@ def generate(provider: str, model: str, prompt: str) -> str:
     if provider == "openai":
         from openai import OpenAI
 
-        client = OpenAI(timeout=60.0)
+        client = OpenAI(timeout=600.0)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -590,7 +590,7 @@ def generate_stream(provider: str, model: str, prompt: str):
         import os
 
         try:
-            client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"), timeout=60.0)
+            client = ollama.Client(host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"), timeout=600.0)
             resp = client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
@@ -618,7 +618,7 @@ def generate_stream(provider: str, model: str, prompt: str):
     if provider == "openai":
         from openai import OpenAI
 
-        client = OpenAI(timeout=60.0)
+        client = OpenAI(timeout=600.0)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
